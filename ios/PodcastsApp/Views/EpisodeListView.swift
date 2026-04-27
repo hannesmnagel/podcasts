@@ -1,8 +1,8 @@
 import SwiftUI
 
 enum EpisodeListMode {
-    case all
     case podcast(String)
+    case subscriptions([String])
     case search(String)
     case placeholder
 }
@@ -18,6 +18,11 @@ struct EpisodeListView: View {
     init(title: String, podcastID: String? = nil) {
         self.title = title
         self.mode = podcastID.map(EpisodeListMode.podcast) ?? .placeholder
+    }
+
+    init(title: String, subscriptions: [PodcastSubscription]) {
+        self.title = title
+        self.mode = .subscriptions(subscriptions.map(\.stableID))
     }
 
     init(title: String, mode: EpisodeListMode) {
@@ -45,19 +50,35 @@ struct EpisodeListView: View {
     private var emptyText: String {
         switch mode {
         case .placeholder: "This smart playlist is not wired yet."
-        default: "Add or crawl a podcast feed first."
+        case .subscriptions(let ids) where ids.isEmpty: "Search for podcasts and add them to your library."
+        default: "No crawled episodes yet."
         }
     }
 
     private func load() async {
         do {
-            episodes = switch mode {
-            case .all: try await client.allEpisodes()
-            case .podcast(let podcastID): try await client.episodes(for: podcastID)
-            case .search(let query): try await client.search(query).episodes
-            case .placeholder: []
-            }
+            episodes = try await loadEpisodes()
         } catch { errorMessage = error.localizedDescription }
+    }
+
+    private func loadEpisodes() async throws -> [EpisodeDTO] {
+        switch mode {
+        case .podcast(let podcastID): try await client.episodes(for: podcastID)
+        case .subscriptions(let podcastIDs): try await loadSubscriptions(podcastIDs)
+        case .search(let query): try await client.search(query).episodes
+        case .placeholder: []
+        }
+    }
+
+    private func loadSubscriptions(_ podcastIDs: [String]) async throws -> [EpisodeDTO] {
+        try await withThrowingTaskGroup(of: [EpisodeDTO].self) { group in
+            for podcastID in podcastIDs {
+                group.addTask { try await client.episodes(for: podcastID) }
+            }
+            var episodes: [EpisodeDTO] = []
+            for try await podcastEpisodes in group { episodes += podcastEpisodes }
+            return episodes.sorted { ($0.publishedAt ?? .distantPast) > ($1.publishedAt ?? .distantPast) }
+        }
     }
 }
 

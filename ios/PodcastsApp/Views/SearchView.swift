@@ -1,6 +1,9 @@
+import SwiftData
 import SwiftUI
 
 struct SearchView: View {
+    @Environment(\.modelContext) private var modelContext
+    @Query private var subscriptions: [PodcastSubscription]
     @State private var query = ""
     @State private var results = EpisodeSearchDTO()
     @State private var errorMessage: String?
@@ -11,10 +14,16 @@ struct SearchView: View {
         NavigationStack {
             List {
                 if !results.podcasts.isEmpty {
-                    Section("In Library") {
+                    Section("Known Podcasts") {
                         ForEach(results.podcasts) { podcast in
-                            NavigationLink(podcast.title.isEmpty ? podcast.feedURL : podcast.title) {
-                                EpisodeListView(title: podcast.title, podcastID: podcast.stableID)
+                            SearchPodcastRow(
+                                title: podcast.title.isEmpty ? podcast.feedURL : podcast.title,
+                                subtitle: podcast.feedURL,
+                                artworkURL: podcast.imageURL,
+                                isSubscribed: isSubscribed(to: podcast.stableID),
+                                isAdding: addingFeedURL == podcast.feedURL
+                            ) {
+                                Task { await addKnownPodcast(podcast) }
                             }
                         }
                     }
@@ -27,8 +36,14 @@ struct SearchView: View {
                 if !results.directory.isEmpty {
                     Section("Apple Podcasts Directory") {
                         ForEach(results.directory) { podcast in
-                            PodcastDirectoryRow(podcast: podcast, isAdding: addingFeedURL == podcast.feedURL) {
-                                Task { await add(podcast) }
+                            SearchPodcastRow(
+                                title: podcast.title,
+                                subtitle: podcast.artistName ?? podcast.feedURL,
+                                artworkURL: podcast.artworkURL,
+                                isSubscribed: subscriptions.contains { $0.feedURL.absoluteString == podcast.feedURL },
+                                isAdding: addingFeedURL == podcast.feedURL
+                            ) {
+                                Task { await addDirectoryPodcast(podcast) }
                             }
                         }
                     }
@@ -36,7 +51,7 @@ struct SearchView: View {
             }
             .overlay {
                 if query.isEmpty {
-                    ContentUnavailableView("Search", systemImage: "magnifyingglass", description: Text("Search your crawled library and Apple Podcasts to add new shows."))
+                    ContentUnavailableView("Search", systemImage: "magnifyingglass", description: Text("Search the shared podcast catalog and Apple Podcasts, then add shows to your private library."))
                 } else if results.podcasts.isEmpty && results.episodes.isEmpty && results.directory.isEmpty {
                     ContentUnavailableView("No Results", systemImage: "magnifyingglass")
                 }
@@ -59,27 +74,41 @@ struct SearchView: View {
         do { results = try await client.search(query) } catch { errorMessage = error.localizedDescription }
     }
 
-    private func add(_ podcast: PodcastDirectoryDTO) async {
+    private func addKnownPodcast(_ podcast: PodcastDTO) async {
+        addingFeedURL = podcast.feedURL
+        defer { addingFeedURL = nil }
+        LibraryStore.subscribe(to: podcast, in: modelContext)
+    }
+
+    private func addDirectoryPodcast(_ podcast: PodcastDirectoryDTO) async {
         guard let url = URL(string: podcast.feedURL) else { return }
         addingFeedURL = podcast.feedURL
         defer { addingFeedURL = nil }
         do {
-            _ = try await client.addPodcast(feedURL: url)
+            let addedPodcast = try await client.addPodcast(feedURL: url)
+            LibraryStore.subscribe(to: addedPodcast, in: modelContext)
             await search()
         } catch {
             errorMessage = error.localizedDescription
         }
     }
+
+    private func isSubscribed(to stableID: String) -> Bool {
+        subscriptions.contains { $0.stableID == stableID }
+    }
 }
 
-private struct PodcastDirectoryRow: View {
-    let podcast: PodcastDirectoryDTO
+private struct SearchPodcastRow: View {
+    let title: String
+    let subtitle: String
+    let artworkURL: String?
+    let isSubscribed: Bool
     let isAdding: Bool
     let add: () -> Void
 
     var body: some View {
         HStack(spacing: 12) {
-            AsyncImage(url: podcast.artworkURL.flatMap(URL.init(string:))) { image in
+            AsyncImage(url: artworkURL.flatMap(URL.init(string:))) { image in
                 image.resizable().scaledToFill()
             } placeholder: {
                 RoundedRectangle(cornerRadius: 8).fill(.secondary.opacity(0.2))
@@ -89,18 +118,12 @@ private struct PodcastDirectoryRow: View {
             .clipShape(RoundedRectangle(cornerRadius: 8))
 
             VStack(alignment: .leading, spacing: 4) {
-                Text(podcast.title)
+                Text(title)
                     .font(.headline)
                     .lineLimit(2)
-                if let artistName = podcast.artistName, !artistName.isEmpty {
-                    Text(artistName)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-                Text(podcast.feedURL)
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
+                Text(subtitle)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
 
@@ -110,12 +133,12 @@ private struct PodcastDirectoryRow: View {
                 if isAdding {
                     ProgressView()
                 } else {
-                    Label("Add", systemImage: "plus.circle.fill")
+                    Label(isSubscribed ? "Added" : "Add", systemImage: isSubscribed ? "checkmark.circle.fill" : "plus.circle.fill")
                         .labelStyle(.iconOnly)
                 }
             }
-            .disabled(isAdding)
-            .accessibilityLabel("Add \(podcast.title)")
+            .disabled(isAdding || isSubscribed)
+            .accessibilityLabel(isSubscribed ? "Already added" : "Add \(title)")
         }
     }
 }

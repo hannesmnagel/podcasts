@@ -1,32 +1,39 @@
+import SwiftData
 import SwiftUI
 
 struct AllPodcastsView: View {
-    @State private var podcasts: [PodcastDTO] = []
+    @Environment(\.modelContext) private var modelContext
+    @Query(sort: \PodcastSubscription.sortIndex) private var subscriptions: [PodcastSubscription]
     @State private var feedURL = ""
     @State private var errorMessage: String?
+    @State private var isAdding = false
     private let client = BackendClient()
 
     var body: some View {
         NavigationStack {
             List {
-                Section("Add Feed") {
+                Section("Add Feed To Your Library") {
                     TextField("RSS feed URL", text: $feedURL)
                         .textInputAutocapitalization(.never)
                         .keyboardType(.URL)
-                    Button("Add Podcast", action: addPodcast)
-                        .disabled(URL(string: feedURL) == nil)
+                    Button(isAdding ? "Adding…" : "Add Podcast", action: addPodcast)
+                        .disabled(URL(string: feedURL) == nil || isAdding)
                 }
 
-                Section("Podcasts") {
-                    ForEach(podcasts) { podcast in
-                        NavigationLink(podcast.title.isEmpty ? podcast.feedURL : podcast.title) {
-                            EpisodeListView(title: podcast.title, podcastID: podcast.stableID)
+                Section("Your Podcasts") {
+                    ForEach(subscriptions) { subscription in
+                        NavigationLink(subscription.title.isEmpty ? subscription.feedURL.absoluteString : subscription.title) {
+                            EpisodeListView(title: subscription.title, podcastID: subscription.stableID)
                         }
                     }
                 }
             }
-            .navigationTitle("All Podcasts")
-            .task { await load() }
+            .navigationTitle("Library")
+            .overlay {
+                if subscriptions.isEmpty {
+                    ContentUnavailableView("No Podcasts", systemImage: "square.stack", description: Text("Add an RSS feed or search Apple Podcasts."))
+                }
+            }
             .alert("Backend error", isPresented: .constant(errorMessage != nil), actions: {
                 Button("OK") { errorMessage = nil }
             }, message: {
@@ -35,17 +42,15 @@ struct AllPodcastsView: View {
         }
     }
 
-    private func load() async {
-        do { podcasts = try await client.podcasts() } catch { errorMessage = error.localizedDescription }
-    }
-
     private func addPodcast() {
         guard let url = URL(string: feedURL) else { return }
+        isAdding = true
         Task {
+            defer { isAdding = false }
             do {
-                _ = try await client.addPodcast(feedURL: url)
+                let podcast = try await client.addPodcast(feedURL: url)
+                LibraryStore.subscribe(to: podcast, in: modelContext)
                 feedURL = ""
-                await load()
             } catch { errorMessage = error.localizedDescription }
         }
     }

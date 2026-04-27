@@ -29,6 +29,7 @@ targets:
       path: ios/PodcastsApp/Info.plist
       properties:
         CFBundleDisplayName: Podcasts
+        BackendBaseURL: https://podcasts.hannesnagel.com
         UILaunchScreen: {}
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false

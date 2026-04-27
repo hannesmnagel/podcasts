@@ -10,6 +10,7 @@
 		0CE58D717AF16B25555B7A6C /* AllPodcastsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E11208B42B85C23F3D8B31EC /* AllPodcastsView.swift */; };
 		11B660BA8BDDF2B15889D181 /* RootTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1045204BCEB2B486E3CADE53 /* RootTabView.swift */; };
 		389954AC698C02A916345AC9 /* Playlist.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E0ED6534E4986F54972EC12 /* Playlist.swift */; };
+		3AF3FCF297E9AB121681DBCD /* LibraryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C389E5B6E09857A50E692F67 /* LibraryStore.swift */; };
 		49E0F89AEAF69A66529D0C8E /* SearchView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 30397A1B5661ABE93A71ACFB /* SearchView.swift */; };
 		5C09F7290F33BBDC6364B6B7 /* PlayerController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 246138886CAA032954429017 /* PlayerController.swift */; };
 		7835B9792CD74DC2D089AAF8 /* AllEpisodesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F97767F6F6864ACEC2591D01 /* AllEpisodesView.swift */; };
@@ -35,6 +36,7 @@
 		7F2076613D6BD9246738A4E6 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		9D0F13CA5737C5E2735DB4FD /* Podcasts.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Podcasts.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B5C0A90DF27AA70BF24944D0 /* EpisodeDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EpisodeDetailView.swift; sourceTree = "<group>"; };
+		C389E5B6E09857A50E692F67 /* LibraryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryStore.swift; sourceTree = "<group>"; };
 		E11208B42B85C23F3D8B31EC /* AllPodcastsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AllPodcastsView.swift; sourceTree = "<group>"; };
 		F8B729364B5024ABA775E3BB /* MiniPlayerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MiniPlayerView.swift; sourceTree = "<group>"; };
 		F97767F6F6864ACEC2591D01 /* AllEpisodesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AllEpisodesView.swift; sourceTree = "<group>"; };
@@ -45,6 +47,7 @@
 			isa = PBXGroup;
 			children = (
 				37195B288FF63CB94CF9FD15 /* BackendClient.swift */,
+				C389E5B6E09857A50E692F67 /* LibraryStore.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -185,6 +188,7 @@
 				D33149ACB7F6342B1E389034 /* BackendClient.swift in Sources */,
 				C134F9F079F2EA7A181CBBCD /* EpisodeDetailView.swift in Sources */,
 				A3CA3B482522F978DC36CFD5 /* EpisodeListView.swift in Sources */,
+				3AF3FCF297E9AB121681DBCD /* LibraryStore.swift in Sources */,
 				E87DDCD0AD82451592F2DEC3 /* LocalEpisodeState.swift in Sources */,
 				848A9A77C2EAFB63E3A8799B /* MiniPlayerView.swift in Sources */,
 				5C09F7290F33BBDC6364B6B7 /* PlayerController.swift in Sources */,

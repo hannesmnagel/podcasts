@@ -3,13 +3,15 @@ import SwiftData
 
 @Model
 final class PodcastSubscription {
-    @Attribute(.unique) var feedURL: URL
+    @Attribute(.unique) var stableID: String
+    var feedURL: URL
     var title: String
     var artworkURL: URL?
     var createdAt: Date
     var sortIndex: Int
 
-    init(feedURL: URL, title: String = "", artworkURL: URL? = nil, sortIndex: Int = 0) {
+    init(stableID: String, feedURL: URL, title: String = "", artworkURL: URL? = nil, sortIndex: Int = 0) {
+        self.stableID = stableID
         self.feedURL = feedURL
         self.title = title
         self.artworkURL = artworkURL

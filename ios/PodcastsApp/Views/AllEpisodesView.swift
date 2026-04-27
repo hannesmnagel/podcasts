@@ -2,14 +2,16 @@ import SwiftData
 import SwiftUI
 
 struct AllEpisodesView: View {
+    @Binding var selectedEpisode: EpisodeDTO?
     @Query(sort: \PodcastSubscription.sortIndex) private var subscriptions: [PodcastSubscription]
     @State private var playlists = ["Latest", "In Progress", "Downloaded", "Starred"]
     @State private var episodes: [EpisodeDTO] = []
+    @State private var path: [EpisodeDTO] = []
     @State private var errorMessage: String?
     private let client = BackendClient()
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             List {
                 Section("Playlists") {
                     ForEach(playlists, id: \.self) { playlist in
@@ -26,10 +28,19 @@ struct AllEpisodesView: View {
                     }
                 }
             }
+            .listStyle(.plain)
             .navigationTitle("All Episodes")
+            .navigationDestination(for: EpisodeDTO.self) { episode in
+                EpisodeDetailView(episode: episode)
+            }
             .toolbar {
                 EditButton()
                 Button("Refresh", systemImage: "arrow.clockwise") { Task { await load() } }
+            }
+            .onChange(of: selectedEpisode) { _, episode in
+                guard let episode else { return }
+                path = [episode]
+                selectedEpisode = nil
             }
             .task(id: subscriptions.map(\.stableID)) { await load() }
             .overlay {

@@ -25,6 +25,13 @@ struct MiniPlayerView: View {
                         .frame(width: 44, height: 44)
                 }
                 .accessibilityLabel(player.isPlaying ? "Pause" : "Play")
+
+                Button { showNowPlaying = true } label: {
+                    Image(systemName: "chevron.up")
+                        .font(.title3)
+                        .frame(width: 44, height: 44)
+                }
+                .accessibilityLabel("Open Now Playing")
             }
             .padding(.horizontal)
             .padding(.vertical, 10)

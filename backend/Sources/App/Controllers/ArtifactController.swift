@@ -23,10 +23,10 @@ struct ArtifactController: RouteCollection {
 
         let podcastDemand = try await incrementPodcastDemand(for: episode, input: input, on: req.db)
         let podcastPriorityBoost = podcastDemand.priorityScore
-        if input.transcript ?? true {
+        if input.transcript ?? true, !(try await artifactExists(episodeID: episodeID, kind: "transcript", on: req.db)) {
             try await ensureWorkerJob(episodeID: episodeID, kind: "transcript", priority: demand.transcriptCount * 3 + podcastPriorityBoost, on: req.db)
         }
-        if input.chapters ?? true {
+        if input.chapters ?? true, !(try await artifactExists(episodeID: episodeID, kind: "chapters", on: req.db)) {
             try await ensureWorkerJob(episodeID: episodeID, kind: "chapters", priority: demand.chapterCount * 2 + podcastPriorityBoost, on: req.db)
         }
         return ArtifactRequestResponse(episodeID: episode.stableID, transcriptCount: demand.transcriptCount, chapterCount: demand.chapterCount, fingerprintCount: demand.fingerprintCount)
@@ -109,13 +109,29 @@ struct ArtifactController: RouteCollection {
         if let existing = try await WorkerJob.query(on: db)
             .filter(\.$episode.$id == episodeID)
             .filter(\.$kind == kind)
-            .filter(\.$status == "pending")
             .first() {
-            existing.priority = max(existing.priority, priority)
-            try await existing.save(on: db)
+            if existing.status == "pending" {
+                existing.priority = max(existing.priority, priority)
+                try await existing.save(on: db)
+            }
             return
         }
         try await WorkerJob(episodeID: episodeID, kind: kind, priority: priority).save(on: db)
+    }
+
+    private func artifactExists(episodeID: UUID, kind: String, on db: any Database) async throws -> Bool {
+        switch kind {
+        case "transcript":
+            return try await TranscriptArtifact.query(on: db)
+                .filter(\.$episode.$id == episodeID)
+                .first() != nil
+        case "chapters":
+            return try await ChapterArtifact.query(on: db)
+                .filter(\.$episode.$id == episodeID)
+                .first() != nil
+        default:
+            return false
+        }
     }
 
     private func findEpisode(_ req: Request) async throws -> Episode {

@@ -2,15 +2,17 @@ import SwiftData
 import SwiftUI
 
 struct AllPodcastsView: View {
+    @Binding var selectedPodcastID: String?
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \PodcastSubscription.sortIndex) private var subscriptions: [PodcastSubscription]
     @State private var feedURL = ""
+    @State private var path: [String] = []
     @State private var errorMessage: String?
     @State private var isAdding = false
     private let client = BackendClient()
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             List {
                 Section("Add Feed To Your Library") {
                     TextField("RSS feed URL", text: $feedURL)
@@ -22,13 +24,36 @@ struct AllPodcastsView: View {
 
                 Section("Your Podcasts") {
                     ForEach(subscriptions) { subscription in
-                        NavigationLink(subscription.title.isEmpty ? subscription.feedURL.absoluteString : subscription.title) {
-                            EpisodeListView(title: subscription.title, podcastID: subscription.stableID)
+                        NavigationLink(value: subscription.stableID) {
+                            Text(subscription.title.isEmpty ? subscription.feedURL.absoluteString : subscription.title)
+                        }
+                        .contextMenu {
+                            ShareLink(item: subscription.feedURL) {
+                                Label("Share Feed", systemImage: "square.and.arrow.up")
+                            }
+                            Button("Delete Podcast", systemImage: "trash", role: .destructive) {
+                                modelContext.delete(subscription)
+                            }
+                        }
+                        .swipeActions {
+                            Button("Delete", systemImage: "trash", role: .destructive) {
+                                modelContext.delete(subscription)
+                            }
                         }
                     }
                 }
             }
+            .listStyle(.plain)
             .navigationTitle("Library")
+            .navigationDestination(for: String.self) { podcastID in
+                let title = subscriptions.first { $0.stableID == podcastID }?.title ?? "Podcast"
+                EpisodeListView(title: title, podcastID: podcastID)
+            }
+            .onChange(of: selectedPodcastID) { _, podcastID in
+                guard let podcastID else { return }
+                path = [podcastID]
+                selectedPodcastID = nil
+            }
             .overlay {
                 if subscriptions.isEmpty {
                     ContentUnavailableView("No Podcasts", systemImage: "square.stack", description: Text("Add an RSS feed or search Apple Podcasts."))

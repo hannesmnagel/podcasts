@@ -12,6 +12,10 @@ struct WorkerConfig {
     var allowStubTranscripts = ProcessInfo.processInfo.environment["PODCAST_WORKER_ALLOW_STUB"] == "true"
     var whisperCommand = ProcessInfo.processInfo.environment["PODCAST_WHISPER_COMMAND"] ?? "whisper"
     var whisperModel = ProcessInfo.processInfo.environment["PODCAST_WHISPER_MODEL"] ?? ""
+    var ollamaURL = URL(string: ProcessInfo.processInfo.environment["PODCAST_OLLAMA_URL"] ?? "http://localhost:11434")!
+    var ollamaModel = ProcessInfo.processInfo.environment["PODCAST_OLLAMA_MODEL"] ?? "llama3.2:3b"
+    var minimumChapterSpacing = TimeInterval(ProcessInfo.processInfo.environment["PODCAST_CHAPTER_MIN_SECONDS"] ?? "180") ?? 180
+    var maximumChapters = Int(ProcessInfo.processInfo.environment["PODCAST_CHAPTER_MAX_COUNT"] ?? "24") ?? 24
 }
 
 @main
@@ -28,7 +32,7 @@ enum PodcastWorker {
                     var req = URLRequest(url: url)
                     req.httpMethod = "POST"
                     req.addValue("application/json", forHTTPHeaderField: "Content-Type")
-                    req.httpBody = try? JSONEncoder().encode(EmptyBody())
+                    req.httpBody = try? JSONEncoder().encode(FailJobRequest(retry: true))
                     let sem = DispatchSemaphore(value: 0)
                     URLSession.shared.dataTask(with: req) { _, _, _ in sem.signal() }.resume()
                     _ = sem.wait(timeout: .now() + 5)
@@ -88,7 +92,7 @@ struct JobProcessor {
             _ = try await client.completeJob(job.id)
             print("completed job \(job.id)")
         } catch {
-            try? await client.failJob(job.id)
+            try? await client.failJob(job.id, retry: false)
             throw error
         }
     }
@@ -122,9 +126,40 @@ struct JobProcessor {
     }
 
     private func makeChapters(for episode: EpisodeDTO) async throws -> ChaptersUploadDTO {
-        let chapters = [ChapterDTO(start: 0, title: episode.title)]
+        print("  loading transcript for chapterization…")
+        let segments = try await transcriptSegments(for: episode)
+        let chapters = try await OllamaChapterizer(
+            baseURL: config.ollamaURL,
+            model: config.ollamaModel,
+            minimumSpacing: config.minimumChapterSpacing,
+            maximumChapters: config.maximumChapters
+        ).chapters(for: episode, segments: segments)
+        guard chapters.count > 1 else { throw WorkerError.chapterizationFailed }
+        print("  chapterization complete — \(chapters.count) chapters")
         let data = try JSONEncoder().encode(chapters)
-        return ChaptersUploadDTO(source: "worker-basic", chaptersJSON: String(decoding: data, as: UTF8.self))
+        return ChaptersUploadDTO(source: "worker-ollama-\(config.ollamaModel)", chaptersJSON: String(decoding: data, as: UTF8.self))
+    }
+
+    private func transcriptSegments(for episode: EpisodeDTO) async throws -> [TranscriptSegment] {
+        if let artifact = try await client.transcript(episodeID: episode.stableID),
+           let segments = try decodeTranscriptSegments(artifact.segmentsJSON),
+           !segments.isEmpty {
+            print("  using stored transcript")
+            return segments
+        }
+
+        print("  no stored transcript found; running Whisper for chapterization…")
+        let upload = try await makeTranscript(for: episode)
+        try await client.uploadTranscript(upload, episodeID: episode.stableID)
+        guard let segments = try decodeTranscriptSegments(upload.segmentsJSON), !segments.isEmpty else {
+            throw WorkerError.transcriptSegmentsMissing
+        }
+        return segments
+    }
+
+    private func decodeTranscriptSegments(_ segmentsJSON: String) throws -> [TranscriptSegment]? {
+        guard let data = segmentsJSON.data(using: .utf8) else { return nil }
+        return try JSONDecoder().decode([TranscriptSegment].self, from: data)
     }
 
     private func downloadAudio(from rawURL: String, stableID: String) async throws -> URL {
@@ -164,6 +199,14 @@ struct WorkerBackendClient {
         let _: TranscriptArtifactDTO = try await post("episodes/\(episodeID)/transcript", body: upload)
     }
 
+    func transcript(episodeID: String) async throws -> TranscriptArtifactDTO? {
+        do {
+            return try await get("episodes/\(episodeID)/transcript")
+        } catch WorkerError.notFound {
+            return nil
+        }
+    }
+
     func uploadChapters(_ upload: ChaptersUploadDTO, episodeID: String) async throws {
         let _: ChapterArtifactDTO = try await post("episodes/\(episodeID)/chapters", body: upload)
     }
@@ -172,8 +215,8 @@ struct WorkerBackendClient {
         try await post("worker/jobs/\(id.uuidString)/complete", body: EmptyBody())
     }
 
-    func failJob(_ id: UUID) async throws {
-        let _: WorkerJobDTO = try await post("worker/jobs/\(id.uuidString)/fail", body: EmptyBody())
+    func failJob(_ id: UUID, retry: Bool) async throws {
+        let _: WorkerJobDTO = try await post("worker/jobs/\(id.uuidString)/fail", body: FailJobRequest(retry: retry))
     }
 
     private func post<Response: Decodable, Body: Encodable>(_ path: String, body: Body) async throws -> Response {
@@ -186,6 +229,12 @@ struct WorkerBackendClient {
         return try decoder.decode(Response.self, from: data)
     }
 
+    private func get<Response: Decodable>(_ path: String) async throws -> Response {
+        let (data, response) = try await URLSession.shared.data(from: url(for: path))
+        try validate(response, data: data)
+        return try decoder.decode(Response.self, from: data)
+    }
+
     private func url(for path: String) -> URL {
         URL(string: path, relativeTo: baseURL)!.absoluteURL
     }
@@ -193,6 +242,7 @@ struct WorkerBackendClient {
     private func validate(_ response: URLResponse, data: Data) throws {
         guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
         if http.statusCode == 204 { throw WorkerError.noContent }
+        if http.statusCode == 404 { throw WorkerError.notFound }
         guard (200..<300).contains(http.statusCode) else {
             throw WorkerError.server(status: http.statusCode, body: String(data: data, encoding: .utf8))
         }
@@ -251,6 +301,7 @@ struct WhisperRunner {
 }
 
 struct ClaimJobRequest: Codable { let workerID: String }
+struct FailJobRequest: Codable { let retry: Bool }
 struct EmptyBody: Codable {}
 
 struct WorkerJobDTO: Codable, Identifiable {
@@ -262,6 +313,7 @@ struct WorkerJobDTO: Codable, Identifiable {
 
 struct EpisodeDTO: Codable, Identifiable {
     let id: UUID?
+    let podcastStableID: String?
     let stableID: String
     let title: String
     let audioURL: String
@@ -281,7 +333,10 @@ struct ChaptersUploadDTO: Codable {
     let chaptersJSON: String
 }
 
-struct TranscriptArtifactDTO: Codable { let id: UUID? }
+struct TranscriptArtifactDTO: Codable {
+    let id: UUID?
+    let segmentsJSON: String
+}
 struct ChapterArtifactDTO: Codable { let id: UUID? }
 
 struct TranscriptSegment: Codable {
@@ -317,6 +372,7 @@ struct WhisperResult {
 
 enum WorkerError: LocalizedError {
     case noContent
+    case notFound
     case server(status: Int, body: String?)
     case unsupportedJobKind(String)
     case downloadFailed(Int)
@@ -324,10 +380,14 @@ enum WorkerError: LocalizedError {
     case whisperFailed(Int32)
     case whisperOutputMissing
     case transcriptTooShort(Int)
+    case transcriptSegmentsMissing
+    case chapterizationFailed
+    case ollamaInvalidResponse
 
     var errorDescription: String? {
         switch self {
         case .noContent: "No pending worker jobs"
+        case .notFound: "Requested backend resource was not found"
         case let .server(status, body): "Backend error \(status): \(body ?? "")"
         case let .unsupportedJobKind(kind): "Unsupported job kind: \(kind)"
         case let .downloadFailed(status): "Audio download failed with HTTP \(status)"
@@ -335,6 +395,9 @@ enum WorkerError: LocalizedError {
         case let .whisperFailed(status): "Whisper failed with exit code \(status)"
         case .whisperOutputMissing: "Whisper did not produce a JSON output file"
         case let .transcriptTooShort(count): "Transcript too short (\(count) chars) — likely a transcription failure"
+        case .transcriptSegmentsMissing: "Transcript did not contain decodable timed segments"
+        case .chapterizationFailed: "Chapterization did not produce enough chapter boundaries"
+        case .ollamaInvalidResponse: "Ollama did not return valid chapter JSON"
         }
     }
 }
@@ -361,4 +424,5 @@ extension String {
         }
         return String(hash, radix: 16)
     }
+
 }

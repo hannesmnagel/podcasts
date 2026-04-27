@@ -13,6 +13,7 @@ struct EpisodeController: RouteCollection {
     func recentEpisodes(req: Request) async throws -> [EpisodeResponse] {
         let limit = min(max(req.query[Int.self, at: "limit"] ?? 100, 1), 500)
         return try await Episode.query(on: req.db)
+            .with(\.$podcast)
             .sort(\.$publishedAt, .descending)
             .limit(limit)
             .all()
@@ -31,6 +32,7 @@ struct EpisodeController: RouteCollection {
             .all()
             .map(PodcastResponse.init)
         let episodes = try await Episode.query(on: req.db)
+            .with(\.$podcast)
             .group(.or) { group in
                 group.filter(\.$title ~~ q)
                 group.filter(\.$summary ~~ q)
@@ -46,6 +48,7 @@ struct EpisodeController: RouteCollection {
     func episodesForPodcast(req: Request) async throws -> [EpisodeResponse] {
         let podcast = try await findPodcast(req)
         return try await Episode.query(on: req.db)
+            .with(\.$podcast)
             .filter(\.$podcast.$id == podcast.requireID())
             .sort(\.$publishedAt, .descending)
             .all()

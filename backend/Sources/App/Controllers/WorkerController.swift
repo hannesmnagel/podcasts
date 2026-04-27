@@ -11,17 +11,30 @@ struct WorkerController: RouteCollection {
 
     func claim(req: Request) async throws -> ClaimedWorkerJobResponse {
         let input = try req.content.decode(ClaimJobRequest.self)
-        guard let job = try await WorkerJob.query(on: req.db)
-            .with(\.$episode)
-            .filter(\.$status == "pending")
-            .sort(\.$priority, .descending)
-            .sort(\.$createdAt, .ascending)
-            .first() else { throw Abort(.noContent) }
-        job.status = "claimed"
-        job.claimedBy = input.workerID
-        job.claimedAt = Date()
-        try await job.save(on: req.db)
-        return try ClaimedWorkerJobResponse(job: job)
+        for _ in 0..<3 {
+            guard let candidate = try await WorkerJob.query(on: req.db)
+                .filter(\.$status == "pending")
+                .sort(\.$priority, .descending)
+                .sort(\.$createdAt, .ascending)
+                .first() else { throw Abort(.noContent) }
+            let candidateID = try candidate.requireID()
+            try await WorkerJob.query(on: req.db)
+                .filter(\.$id == candidateID)
+                .filter(\.$status == "pending")
+                .set(\.$status, to: "claimed")
+                .set(\.$claimedBy, to: input.workerID)
+                .set(\.$claimedAt, to: Date())
+                .update()
+            if let claimed = try await WorkerJob.query(on: req.db)
+                .with(\.$episode)
+                .filter(\.$id == candidateID)
+                .filter(\.$status == "claimed")
+                .filter(\.$claimedBy == input.workerID)
+                .first() {
+                return try ClaimedWorkerJobResponse(job: claimed)
+            }
+        }
+        throw Abort(.noContent)
     }
 
     func complete(req: Request) async throws -> ClaimedWorkerJobResponse {
@@ -34,9 +47,14 @@ struct WorkerController: RouteCollection {
 
     func fail(req: Request) async throws -> ClaimedWorkerJobResponse {
         let job = try await findJob(req)
-        job.status = "pending"
-        job.claimedBy = nil
-        job.claimedAt = nil
+        let input = try req.content.decode(FailJobRequest.self)
+        if input.retry ?? false {
+            job.status = "pending"
+            job.claimedBy = nil
+            job.claimedAt = nil
+        } else {
+            job.status = "failed"
+        }
         try await job.save(on: req.db)
         return try ClaimedWorkerJobResponse(job: job)
     }
@@ -52,6 +70,10 @@ struct WorkerController: RouteCollection {
 
 struct ClaimJobRequest: Content {
     let workerID: String
+}
+
+struct FailJobRequest: Content {
+    let retry: Bool?
 }
 
 struct ClaimedWorkerJobResponse: Content {

@@ -23,6 +23,7 @@ struct PodcastResponse: Content {
 
 struct EpisodeResponse: Content {
     let id: UUID?
+    let podcastStableID: String
     let stableID: String
     let title: String
     let summary: String?
@@ -33,6 +34,7 @@ struct EpisodeResponse: Content {
 
     init(episode: Episode) {
         self.id = episode.id
+        self.podcastStableID = episode.$podcast.value?.stableID ?? episode.$podcast.id.uuidString
         self.stableID = episode.stableID
         self.title = episode.title
         self.summary = episode.summary

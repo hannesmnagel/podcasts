@@ -11,6 +11,7 @@ let package = Package(
         .executableTarget(name: "PodcastWorker", swiftSettings: [
             .enableUpcomingFeature("ExistentialAny"),
             .enableExperimentalFeature("StrictConcurrency")
-        ])
+        ]),
+        .testTarget(name: "PodcastWorkerTests", dependencies: ["PodcastWorker"])
     ]
 )

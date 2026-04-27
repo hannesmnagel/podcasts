@@ -34,7 +34,11 @@ struct EpisodeListView: View {
         List(episodes) { episode in
             EpisodeRow(episode: episode)
         }
+        .listStyle(.plain)
         .navigationTitle(title.isEmpty ? "Episodes" : title)
+        .navigationDestination(for: EpisodeDTO.self) { episode in
+            EpisodeDetailView(episode: episode)
+        }
         .task { await load() }
         .refreshable { await load() }
         .overlay {
@@ -85,10 +89,11 @@ struct EpisodeListView: View {
 struct EpisodeRow: View {
     let episode: EpisodeDTO
 
+    @Environment(\.modelContext) private var modelContext
+    @EnvironmentObject private var player: PlayerController
+
     var body: some View {
-        NavigationLink {
-            EpisodeDetailView(episode: episode)
-        } label: {
+        NavigationLink(value: episode) {
             VStack(alignment: .leading, spacing: 6) {
                 Text(episode.title)
                     .font(.headline)
@@ -104,6 +109,56 @@ struct EpisodeRow: View {
                         .lineLimit(3)
                 }
             }
+        }
+        .swipeActions(edge: .leading, allowsFullSwipe: true) {
+            Button("Play", systemImage: "play.fill") {
+                player.play(episode)
+            }
+            .tint(.orange)
+
+            Button("Add", systemImage: "text.badge.plus") {}
+                .disabled(true)
+                .tint(.blue)
+        }
+        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+            Button(isPlayed ? "Unplayed" : "Played", systemImage: isPlayed ? "circle" : "checkmark.circle") {
+                togglePlayed()
+            }
+            .tint(.green)
+
+            Button("Delete", systemImage: "trash", role: .destructive) {}
+                .disabled(true)
+        }
+        .contextMenu {
+            Button("Play", systemImage: "play.fill") {
+                player.play(episode)
+            }
+            Button("Add to Up Next", systemImage: "text.badge.plus") {}
+                .disabled(true)
+            Button(isPlayed ? "Mark as Unplayed" : "Mark as Played", systemImage: isPlayed ? "circle" : "checkmark.circle") {
+                togglePlayed()
+            }
+            ShareLink(item: shareURL) {
+                Label("Share Episode Link", systemImage: "square.and.arrow.up")
+            }
+            Button("Delete Episode", systemImage: "trash", role: .destructive) {}
+                .disabled(true)
+        }
+    }
+
+    private var isPlayed: Bool {
+        LibraryStore.isPlayed(episode, in: modelContext)
+    }
+
+    private var shareURL: URL {
+        URL(string: episode.audioURL) ?? URL(string: "https://podcasts.apple.com")!
+    }
+
+    private func togglePlayed() {
+        if isPlayed {
+            LibraryStore.markUnplayed(episode, in: modelContext)
+        } else {
+            LibraryStore.markPlayed(episode, in: modelContext)
         }
     }
 }

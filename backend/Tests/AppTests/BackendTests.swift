@@ -72,6 +72,85 @@ final class BackendTests: XCTestCase {
         })
     }
 
+    func testCompletedArtifactRequestDoesNotCreateDuplicateWorkerJob() async throws {
+        let app = try await Application.make(.testing)
+        defer { Task { try await app.asyncShutdown() } }
+        try await configure(app)
+        try await app.autoMigrate()
+
+        let podcast = Podcast(stableID: "podcast-stable", feedURL: "https://example.com/feed.xml", title: "Example")
+        try await podcast.save(on: app.db)
+        let episode = Episode(podcastID: try podcast.requireID(), stableID: "episode-stable", guid: "1", title: "Episode", audioURL: "https://example.com/audio.mp3")
+        try await episode.save(on: app.db)
+
+        try await app.test(.POST, "episodes/episode-stable/artifact-requests", beforeRequest: { req in
+            try req.content.encode(ArtifactDemandRequest(transcript: true, chapters: false, fingerprint: false))
+        }, afterResponse: { res async throws in
+            XCTAssertEqual(res.status, .ok)
+        })
+
+        guard let job = try await WorkerJob.query(on: app.db).filter(\.$kind == "transcript").first() else {
+            return XCTFail("Expected transcript job")
+        }
+        job.status = "completed"
+        job.completedAt = Date()
+        try await job.save(on: app.db)
+
+        let transcript = TranscriptArtifact()
+        transcript.$episode.id = try episode.requireID()
+        transcript.locale = "en"
+        transcript.model = "test"
+        transcript.segmentsJSON = "[]"
+        transcript.textHash = "hash"
+        try await transcript.save(on: app.db)
+
+        try await app.test(.POST, "episodes/episode-stable/artifact-requests", beforeRequest: { req in
+            try req.content.encode(ArtifactDemandRequest(transcript: true, chapters: false, fingerprint: false))
+        }, afterResponse: { res async throws in
+            XCTAssertEqual(res.status, .ok)
+        })
+
+        let jobs = try await WorkerJob.query(on: app.db).filter(\.$kind == "transcript").all()
+        XCTAssertEqual(jobs.count, 1)
+    }
+
+    func testFailedWorkerJobIsNotImmediatelyRequeued() async throws {
+        let app = try await Application.make(.testing)
+        defer { Task { try await app.asyncShutdown() } }
+        try await configure(app)
+        try await app.autoMigrate()
+
+        let podcast = Podcast(stableID: "podcast-stable", feedURL: "https://example.com/feed.xml", title: "Example")
+        try await podcast.save(on: app.db)
+        let episode = Episode(podcastID: try podcast.requireID(), stableID: "episode-stable", guid: "1", title: "Episode", audioURL: "https://example.com/audio.mp3")
+        try await episode.save(on: app.db)
+        let job = WorkerJob(episodeID: try episode.requireID(), kind: "transcript", priority: 10)
+        try await job.save(on: app.db)
+
+        try await app.test(.POST, "worker/jobs/claim", beforeRequest: { req in
+            try req.content.encode(ClaimJobRequest(workerID: "test-worker"))
+        }, afterResponse: { res async throws in
+            XCTAssertEqual(res.status, .ok)
+        })
+
+        try await app.test(.POST, "worker/jobs/\(try job.requireID())/fail", beforeRequest: { req in
+            try req.content.encode(FailJobRequest(retry: false))
+        }, afterResponse: { res async throws in
+            XCTAssertEqual(res.status, .ok)
+        })
+
+        guard let failedJob = try await WorkerJob.find(try job.requireID(), on: app.db) else {
+            return XCTFail("Expected failed job")
+        }
+        XCTAssertEqual(failedJob.status, "failed")
+
+        try await app.test(.POST, "worker/jobs/claim", beforeRequest: { req in
+            try req.content.encode(ClaimJobRequest(workerID: "test-worker"))
+        }, afterResponse: { res async throws in
+            XCTAssertEqual(res.status, .noContent)
+        })
+    }
+
     func testPodcastIDIsStableForURLNormalization() {
         XCTAssertEqual(
             StableID.podcastID(feedURL: "HTTPS://EXAMPLE.COM/feed.xml#fragment"),

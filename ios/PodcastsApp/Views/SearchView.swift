@@ -49,6 +49,7 @@ struct SearchView: View {
                     }
                 }
             }
+            .listStyle(.plain)
             .overlay {
                 if query.isEmpty {
                     ContentUnavailableView("Search", systemImage: "magnifyingglass", description: Text("Search the shared podcast catalog and Apple Podcasts, then add shows to your private library."))
@@ -58,6 +59,9 @@ struct SearchView: View {
             }
             .searchable(text: $query, prompt: "Search or add podcasts")
             .navigationTitle("Search")
+            .navigationDestination(for: EpisodeDTO.self) { episode in
+                EpisodeDetailView(episode: episode)
+            }
             .onSubmit(of: .search) { Task { await search() } }
             .onChange(of: query) { _, newValue in
                 if newValue.isEmpty { results = EpisodeSearchDTO() }
@@ -139,6 +143,14 @@ private struct SearchPodcastRow: View {
             }
             .disabled(isAdding || isSubscribed)
             .accessibilityLabel(isSubscribed ? "Already added" : "Add \(title)")
+        }
+        .contextMenu {
+            if !isSubscribed {
+                Button("Add Podcast", systemImage: "plus.circle", action: add)
+            }
+            ShareLink(item: URL(string: subtitle) ?? URL(string: "https://podcasts.apple.com")!) {
+                Label("Share", systemImage: "square.and.arrow.up")
+            }
         }
     }
 }

@@ -38,6 +38,10 @@ struct BackendClient: Sendable {
         try await get("episodes/\(episodeID)/transcript")
     }
 
+    func chapters(for episodeID: String) async throws -> ChapterArtifactDTO {
+        try await get("episodes/\(episodeID)/chapters")
+    }
+
     private func get<T: Decodable>(_ path: String) async throws -> T {
         let (data, response) = try await URLSession.shared.data(from: url(for: path))
         try validate(response, data: data)
@@ -100,6 +104,7 @@ struct PodcastDTO: Codable, Identifiable, Hashable {
 
 struct EpisodeDTO: Codable, Identifiable, Hashable {
     let id: UUID?
+    let podcastStableID: String?
     let stableID: String
     let title: String
     let summary: String?
@@ -156,4 +161,24 @@ struct TranscriptArtifactDTO: Codable, Hashable {
     let model: String
     let segmentsJSON: String
     let textHash: String
+}
+
+struct ChapterArtifactDTO: Codable, Hashable {
+    let id: UUID?
+    let source: String
+    let chaptersJSON: String
+}
+
+struct EpisodeChapterDTO: Codable, Identifiable, Hashable {
+    let start: TimeInterval
+    let end: TimeInterval?
+    let title: String
+    let imageURL: String?
+    let artworkURL: String?
+
+    var id: String { "\(start)-\(title)" }
+
+    var displayImageURL: URL? {
+        (imageURL ?? artworkURL).flatMap(URL.init(string:))
+    }
 }

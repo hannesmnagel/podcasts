@@ -20,7 +20,7 @@ struct EpisodeController: RouteCollection {
 
     func search(req: Request) async throws -> EpisodeSearchResponse {
         let q = (try? req.query.get(String.self, at: "q"))?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        guard !q.isEmpty else { return EpisodeSearchResponse(podcasts: [], episodes: []) }
+        guard !q.isEmpty else { return EpisodeSearchResponse(podcasts: [], episodes: [], directory: []) }
         let podcasts = try await Podcast.query(on: req.db)
             .group(.or) { group in
                 group.filter(\.$title ~~ q)
@@ -36,7 +36,8 @@ struct EpisodeController: RouteCollection {
             .sort(\.$publishedAt, .descending)
             .limit(50)
             .all()
-        return EpisodeSearchResponse(podcasts: podcasts, episodes: episodes)
+        let directory = try await PodcastDirectorySearch().search(term: q, on: req.application)
+        return EpisodeSearchResponse(podcasts: podcasts, episodes: episodes, directory: directory)
     }
 
     func episodesForPodcast(req: Request) async throws -> [Episode] {
@@ -69,4 +70,5 @@ struct EpisodeController: RouteCollection {
 struct EpisodeSearchResponse: Content {
     let podcasts: [Podcast]
     let episodes: [Episode]
+    let directory: [PodcastDirectoryResult]
 }

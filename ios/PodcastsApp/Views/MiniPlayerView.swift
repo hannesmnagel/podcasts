@@ -41,9 +41,8 @@ struct MiniPlayerView: View {
                     } maximumValueLabel: {
                         Text("5x")
                     }
-                    Text(player.speed, format: .number.precision(.fractionLength(1)))
+                    Text("\(player.speed, format: .number.precision(.fractionLength(1)))x")
                         .monospacedDigit()
-                        + Text("x")
                 }
                 .font(.caption)
             }

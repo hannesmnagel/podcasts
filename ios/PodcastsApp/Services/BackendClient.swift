@@ -112,6 +112,23 @@ struct EpisodeDTO: Codable, Identifiable, Hashable {
 struct EpisodeSearchDTO: Codable, Hashable {
     let podcasts: [PodcastDTO]
     let episodes: [EpisodeDTO]
+    let directory: [PodcastDirectoryDTO]
+
+    init(podcasts: [PodcastDTO] = [], episodes: [EpisodeDTO] = [], directory: [PodcastDirectoryDTO] = []) {
+        self.podcasts = podcasts
+        self.episodes = episodes
+        self.directory = directory
+    }
+}
+
+struct PodcastDirectoryDTO: Codable, Identifiable, Hashable {
+    let title: String
+    let feedURL: String
+    let artistName: String?
+    let artworkURL: String?
+    let directoryURL: String?
+
+    var id: String { feedURL }
 }
 
 struct CreatePodcastDTO: Codable {

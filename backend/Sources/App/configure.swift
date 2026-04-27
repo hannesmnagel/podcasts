@@ -27,5 +27,7 @@ public func configure(_ app: Application) async throws {
     app.migrations.add(CreateChapterArtifact())
     app.migrations.add(CreateWorkerJob())
 
+    app.routes.defaultMaxBodySize = "50mb"
+    app.lifecycle.use(StaleJobReaper())
     try routes(app)
 }

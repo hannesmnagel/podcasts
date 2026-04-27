@@ -2,6 +2,7 @@ import SwiftUI
 
 struct RootTabView: View {
     @StateObject private var player = PlayerController()
+    @State private var showNowPlaying = false
 
     var body: some View {
         TabView {
@@ -12,9 +13,13 @@ struct RootTabView: View {
             SearchView()
                 .tabItem { Label("Search", systemImage: "magnifyingglass") }
         }
+        .tabViewBottomAccessory(isEnabled: player.currentEpisode != nil) {
+            MiniPlayerView(showNowPlaying: $showNowPlaying)
+                .environmentObject(player)
+        }
         .environmentObject(player)
-        .safeAreaInset(edge: .bottom) {
-            MiniPlayerView()
+        .fullScreenCover(isPresented: $showNowPlaying) {
+            NowPlayingView()
                 .environmentObject(player)
         }
     }

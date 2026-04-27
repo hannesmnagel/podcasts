@@ -1,5 +1,9 @@
 import Foundation
 
+nonisolated(unsafe) private var activeChildProcess: Process?
+nonisolated(unsafe) private var activeJobID: UUID?
+nonisolated(unsafe) private var activeJobBackendURL: URL?
+
 struct WorkerConfig {
     var backendURL = URL(string: ProcessInfo.processInfo.environment["PODCAST_BACKEND_URL"] ?? "http://localhost:8080")!
     var workerID = ProcessInfo.processInfo.environment["PODCAST_WORKER_ID"] ?? Host.current().localizedName ?? UUID().uuidString
@@ -7,11 +11,36 @@ struct WorkerConfig {
     var idleSleepSeconds = UInt64(ProcessInfo.processInfo.environment["PODCAST_WORKER_IDLE_SECONDS"] ?? "60") ?? 60
     var allowStubTranscripts = ProcessInfo.processInfo.environment["PODCAST_WORKER_ALLOW_STUB"] == "true"
     var whisperCommand = ProcessInfo.processInfo.environment["PODCAST_WHISPER_COMMAND"] ?? "whisper"
+    var whisperModel = ProcessInfo.processInfo.environment["PODCAST_WHISPER_MODEL"] ?? ""
 }
 
 @main
 enum PodcastWorker {
     static func main() async throws {
+        var signalSources: [any DispatchSourceSignal] = []
+        for sig in [SIGINT, SIGTERM] {
+            signal(sig, SIG_IGN)
+            let src = DispatchSource.makeSignalSource(signal: sig, queue: .global())
+            src.setEventHandler {
+                activeChildProcess?.terminate()
+                if let id = activeJobID, let base = activeJobBackendURL,
+                   let url = URL(string: "worker/jobs/\(id.uuidString)/fail", relativeTo: base)?.absoluteURL {
+                    var req = URLRequest(url: url)
+                    req.httpMethod = "POST"
+                    req.addValue("application/json", forHTTPHeaderField: "Content-Type")
+                    req.httpBody = try? JSONEncoder().encode(EmptyBody())
+                    let sem = DispatchSemaphore(value: 0)
+                    URLSession.shared.dataTask(with: req) { _, _, _ in sem.signal() }.resume()
+                    _ = sem.wait(timeout: .now() + 5)
+                    print("\nfailed active job \(id) before exit")
+                }
+                exit(0)
+            }
+            src.resume()
+            signalSources.append(src)
+        }
+        _ = signalSources  // keep alive for the duration of main
+
         let config = WorkerConfig()
         let client = WorkerBackendClient(baseURL: config.backendURL)
         let processor = JobProcessor(config: config, client: client)
@@ -39,6 +68,12 @@ struct JobProcessor {
     let client: WorkerBackendClient
 
     func process(_ job: WorkerJobDTO) async throws {
+        activeJobID = job.id
+        activeJobBackendURL = client.baseURL
+        defer {
+            activeJobID = nil
+            activeJobBackendURL = nil
+        }
         do {
             switch job.kind {
             case "transcript":
@@ -59,10 +94,17 @@ struct JobProcessor {
     }
 
     private func makeTranscript(for episode: EpisodeDTO) async throws -> TranscriptUploadDTO {
+        print("  downloading audio…")
         let audioFile = try await downloadAudio(from: episode.audioURL, stableID: episode.stableID)
         defer { try? FileManager.default.removeItem(at: audioFile) }
+        let sizeMB = (try? audioFile.resourceValues(forKeys: [.fileSizeKey]).fileSize)
+            .flatMap { Double($0) / 1_048_576 }
+        let sizeStr = sizeMB.map { String(format: "%.1f MB", $0) } ?? "unknown size"
+        print("  audio downloaded (\(sizeStr)), running Whisper…")
 
-        if let whisper = try? await WhisperRunner(command: config.whisperCommand).transcribe(audioFile: audioFile) {
+        if let whisper = try? await WhisperRunner(command: config.whisperCommand, model: config.whisperModel).transcribe(audioFile: audioFile) {
+            print("  transcription complete — language: \(whisper.language ?? "unknown"), \(whisper.segmentCount) segments")
+            guard whisper.text.count >= 200 else { throw WorkerError.transcriptTooShort(whisper.text.count) }
             return TranscriptUploadDTO(
                 renditionID: nil,
                 locale: whisper.language ?? "unknown",
@@ -159,6 +201,7 @@ struct WorkerBackendClient {
 
 struct WhisperRunner {
     let command: String
+    let model: String
 
     func transcribe(audioFile: URL) async throws -> WhisperResult {
         let outputDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("whisper-\(UUID().uuidString)", isDirectory: true)
@@ -167,12 +210,30 @@ struct WhisperRunner {
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = [command, audioFile.path, "--output_format", "json", "--output_dir", outputDirectory.path]
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
+        var args = [command, audioFile.path, "--output-format", "json", "--output-dir", outputDirectory.path]
+        if !model.isEmpty { args += ["--model", model] }
+        process.arguments = args
+        var env = ProcessInfo.processInfo.environment
+        env["PYTHONUNBUFFERED"] = "1"
+        process.environment = env
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+        @Sendable func streamLines(_ handle: FileHandle) {
+            guard let text = String(data: handle.availableData, encoding: .utf8) else { return }
+            for line in text.components(separatedBy: "\n") where !line.trimmingCharacters(in: .whitespaces).isEmpty {
+                print("  \(line)")
+            }
+        }
+        stdoutPipe.fileHandleForReading.readabilityHandler = streamLines
+        stderrPipe.fileHandleForReading.readabilityHandler = streamLines
+        activeChildProcess = process
         try process.run()
         process.waitUntilExit()
+        activeChildProcess = nil
+        stdoutPipe.fileHandleForReading.readabilityHandler = nil
+        stderrPipe.fileHandleForReading.readabilityHandler = nil
         guard process.terminationStatus == 0 else { throw WorkerError.whisperFailed(process.terminationStatus) }
 
         guard let jsonFile = try FileManager.default.contentsOfDirectory(at: outputDirectory, includingPropertiesForKeys: nil).first(where: { $0.pathExtension == "json" }) else {
@@ -180,9 +241,12 @@ struct WhisperRunner {
         }
         let data = try Data(contentsOf: jsonFile)
         let output = try JSONDecoder().decode(WhisperOutput.self, from: data)
-        let segments = output.segments.map { TranscriptSegment(start: $0.start, end: $0.end, text: $0.text.trimmingCharacters(in: .whitespacesAndNewlines)) }
+        let segments = output.segments
+            .map { TranscriptSegment(start: $0.start, end: $0.end, text: $0.text.trimmingCharacters(in: .whitespacesAndNewlines)) }
+            .filter { ($0.start ?? 0) < ($0.end ?? .infinity) }  // drop zero-duration segments
+            .deduplicated(maxConsecutiveIdentical: 2)             // drop hallucination loops
         let segmentsData = try JSONEncoder().encode(segments)
-        return WhisperResult(language: output.language, model: command, text: output.text, segmentsJSON: String(decoding: segmentsData, as: UTF8.self))
+        return WhisperResult(language: output.language, model: command, text: output.text, segmentsJSON: String(decoding: segmentsData, as: UTF8.self), segmentCount: segments.count)
     }
 }
 
@@ -248,6 +312,7 @@ struct WhisperResult {
     let model: String
     let text: String
     let segmentsJSON: String
+    let segmentCount: Int
 }
 
 enum WorkerError: LocalizedError {
@@ -258,6 +323,7 @@ enum WorkerError: LocalizedError {
     case whisperUnavailable
     case whisperFailed(Int32)
     case whisperOutputMissing
+    case transcriptTooShort(Int)
 
     var errorDescription: String? {
         switch self {
@@ -268,7 +334,21 @@ enum WorkerError: LocalizedError {
         case .whisperUnavailable: "Whisper command is unavailable; set PODCAST_WHISPER_COMMAND or PODCAST_WORKER_ALLOW_STUB=true for development"
         case let .whisperFailed(status): "Whisper failed with exit code \(status)"
         case .whisperOutputMissing: "Whisper did not produce a JSON output file"
+        case let .transcriptTooShort(count): "Transcript too short (\(count) chars) — likely a transcription failure"
         }
+    }
+}
+
+extension Array where Element == TranscriptSegment {
+    func deduplicated(maxConsecutiveIdentical limit: Int) -> [TranscriptSegment] {
+        var result: [TranscriptSegment] = []
+        var run = 0
+        var lastText = ""
+        for seg in self {
+            if seg.text == lastText { run += 1 } else { run = 1; lastText = seg.text }
+            if run <= limit { result.append(seg) }
+        }
+        return result
     }
 }
 

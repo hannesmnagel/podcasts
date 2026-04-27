@@ -2,7 +2,7 @@ name: Podcasts
 options:
   bundleIdPrefix: com.nagel
   deploymentTarget:
-    iOS: "26.0"
+    iOS: "26.1"
   createIntermediateGroups: true
 settings:
   base:
@@ -13,7 +13,7 @@ targets:
   Podcasts:
     type: application
     platform: iOS
-    deploymentTarget: "26.0"
+    deploymentTarget: "26.1"
     sources:
       - path: ios/PodcastsApp
     settings:

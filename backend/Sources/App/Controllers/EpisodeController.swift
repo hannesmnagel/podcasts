@@ -10,12 +10,13 @@ struct EpisodeController: RouteCollection {
         routes.grouped("podcasts", ":podcastID", "episodes").get(use: episodesForPodcast)
     }
 
-    func recentEpisodes(req: Request) async throws -> [Episode] {
+    func recentEpisodes(req: Request) async throws -> [EpisodeResponse] {
         let limit = min(max(req.query[Int.self, at: "limit"] ?? 100, 1), 500)
         return try await Episode.query(on: req.db)
             .sort(\.$publishedAt, .descending)
             .limit(limit)
             .all()
+            .map(EpisodeResponse.init)
     }
 
     func search(req: Request) async throws -> EpisodeSearchResponse {
@@ -28,6 +29,7 @@ struct EpisodeController: RouteCollection {
             }
             .limit(25)
             .all()
+            .map(PodcastResponse.init)
         let episodes = try await Episode.query(on: req.db)
             .group(.or) { group in
                 group.filter(\.$title ~~ q)
@@ -36,20 +38,22 @@ struct EpisodeController: RouteCollection {
             .sort(\.$publishedAt, .descending)
             .limit(50)
             .all()
+            .map(EpisodeResponse.init)
         let directory = try await PodcastDirectorySearch().search(term: q, on: req.application)
         return EpisodeSearchResponse(podcasts: podcasts, episodes: episodes, directory: directory)
     }
 
-    func episodesForPodcast(req: Request) async throws -> [Episode] {
+    func episodesForPodcast(req: Request) async throws -> [EpisodeResponse] {
         let podcast = try await findPodcast(req)
         return try await Episode.query(on: req.db)
             .filter(\.$podcast.$id == podcast.requireID())
             .sort(\.$publishedAt, .descending)
             .all()
+            .map(EpisodeResponse.init)
     }
 
-    func episode(req: Request) async throws -> Episode {
-        try await findEpisode(req)
+    func episode(req: Request) async throws -> EpisodeResponse {
+        try await EpisodeResponse(episode: findEpisode(req))
     }
 
     private func findPodcast(_ req: Request) async throws -> Podcast {
@@ -68,7 +72,7 @@ struct EpisodeController: RouteCollection {
 }
 
 struct EpisodeSearchResponse: Content {
-    let podcasts: [Podcast]
-    let episodes: [Episode]
+    let podcasts: [PodcastResponse]
+    let episodes: [EpisodeResponse]
     let directory: [PodcastDirectoryResult]
 }

@@ -21,6 +21,7 @@ env:
   SERVER_HOST: hannesnagel.com
   SERVER_USER: root
   SERVER_DIR: /root/podcasts-backend
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   test:

@@ -4,13 +4,15 @@ import Vapor
 
 struct FeedCrawler: Sendable {
     func crawl(podcast: Podcast, on app: Application) async throws {
-        let response = try await app.client.get(URI(string: podcast.feedURL), headers: requestHeaders(for: podcast))
+        let podcastID = try podcast.requireID()
+        let freshPodcast = try await Podcast.find(podcastID, on: app.db) ?? podcast
+        let response = try await app.client.get(URI(string: freshPodcast.feedURL), headers: requestHeaders(for: freshPodcast))
         if response.status == .notModified { return }
         guard response.status == .ok else { throw Abort(response.status) }
         guard let body = response.body else { throw Abort(.badGateway, reason: "Feed body was empty") }
 
-        if let etag = response.headers.first(name: .eTag) { podcast.etag = etag }
-        if let lastModified = response.headers.first(name: .lastModified) { podcast.lastModified = lastModified }
+        if let etag = response.headers.first(name: .eTag) { freshPodcast.etag = etag }
+        if let lastModified = response.headers.first(name: .lastModified) { freshPodcast.lastModified = lastModified }
 
         let data = Data(buffer: body)
         let result = FeedParser(data: data).parse()
@@ -18,21 +20,21 @@ struct FeedCrawler: Sendable {
 
         switch parsed {
         case .rss(let rss):
-            podcast.title = rss.title ?? podcast.title
-            podcast.description = rss.description
-            podcast.imageURL = rss.image?.url ?? rss.iTunes?.iTunesImage?.attributes?.href
-            podcast.lastCrawledAt = Date()
-            try await podcast.save(on: app.db)
-            try await upsertRSSItems(rss.items ?? [], podcast: podcast, on: app)
+            freshPodcast.title = rss.title ?? freshPodcast.title
+            freshPodcast.description = rss.description
+            freshPodcast.imageURL = rss.image?.url ?? rss.iTunes?.iTunesImage?.attributes?.href
+            freshPodcast.lastCrawledAt = Date()
+            try await freshPodcast.save(on: app.db)
+            try await upsertRSSItems(rss.items ?? [], podcast: freshPodcast, on: app)
         case .atom(let atom):
-            podcast.title = atom.title ?? podcast.title
-            podcast.description = atom.subtitle?.value
-            podcast.lastCrawledAt = Date()
-            try await podcast.save(on: app.db)
-            try await upsertAtomEntries(atom.entries ?? [], podcast: podcast, on: app)
+            freshPodcast.title = atom.title ?? freshPodcast.title
+            freshPodcast.description = atom.subtitle?.value
+            freshPodcast.lastCrawledAt = Date()
+            try await freshPodcast.save(on: app.db)
+            try await upsertAtomEntries(atom.entries ?? [], podcast: freshPodcast, on: app)
         case .json:
-            podcast.lastCrawledAt = Date()
-            try await podcast.save(on: app.db)
+            freshPodcast.lastCrawledAt = Date()
+            try await freshPodcast.save(on: app.db)
         }
     }
 

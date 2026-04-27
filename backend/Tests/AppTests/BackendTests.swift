@@ -66,8 +66,9 @@ final class BackendTests: XCTestCase {
             try req.content.encode(ClaimJobRequest(workerID: "test-worker"))
         }, afterResponse: { res async throws in
             XCTAssertEqual(res.status, .ok)
-            let job = try res.content.decode(WorkerJob.self)
-            XCTAssertEqual(job.$episode.id, try hotEpisode.requireID())
+            let job = try res.content.decode(ClaimedWorkerJobResponse.self)
+            XCTAssertEqual(job.episode.id, try hotEpisode.requireID())
+            XCTAssertEqual(job.episode.stableID, "hot-episode")
         })
     }
 

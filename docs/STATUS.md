@@ -28,3 +28,12 @@
 - Push the local project to GitHub.
 - Add required GitHub Actions secret: `DEPLOY_SSH_PRIVATE_KEY`.
 - Update the server copy of `/root/podcasts-backend/docker-compose.yml` to use the GHCR image, then let Actions deploy.
+
+## Progress — 2026-04-27 later
+
+- Fixed GitHub Actions deploy failure caused by an invalid `DEPLOY_SSH_PRIVATE_KEY` value; reran the failed deploy job and confirmed the workflow is now fully green (`Test backend`, `Build and push Docker image`, and `Deploy on server` all succeeded for run 24998388955).
+- Expanded backend worker claim API to return the episode payload with claimed jobs and added a `fail` endpoint that releases failed jobs back to pending.
+- Added a buildable macOS Swift package for `worker/`.
+- Implemented worker loop: claim demand-prioritized jobs, download episode audio, run local Whisper JSON transcription when configured, upload transcript/chapter artifacts, complete or release jobs on failure.
+- Improved iOS playback shell with play/pause state, elapsed/duration tracking, progress seek slider, 15s/30s skip controls, speed slider, and Now Playing elapsed/duration updates.
+- Verification: backend `swift test` passed; worker `swift build` passed; iOS simulator `xcodebuild ... build` passed. Initial iOS build hit a Swift frontend crash from a method-reference `Binding`; rewritten to explicit closures and rebuilt successfully.

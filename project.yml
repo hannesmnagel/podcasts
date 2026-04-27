@@ -1,0 +1,36 @@
+name: Podcasts
+options:
+  bundleIdPrefix: com.nagel
+  deploymentTarget:
+    iOS: "26.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    DEVELOPMENT_TEAM: X5933694SW
+packages: {}
+targets:
+  Podcasts:
+    type: application
+    platform: iOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: ios/PodcastsApp
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.nagel.podcasts
+        INFOPLIST_KEY_CFBundleDisplayName: Podcasts
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        INFOPLIST_KEY_BackendBaseURL: https://podcasts.hannesnagel.com
+        ENABLE_USER_SCRIPT_SANDBOXING: YES
+        ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS: YES
+    info:
+      path: ios/PodcastsApp/Info.plist
+      properties:
+        CFBundleDisplayName: Podcasts
+        UILaunchScreen: {}
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        UIBackgroundModes:
+          - audio

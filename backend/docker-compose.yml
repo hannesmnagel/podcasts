@@ -1,0 +1,30 @@
+services:
+  app:
+    image: ghcr.io/hannesmnagel/podcasts:latest
+    build: .
+    restart: unless-stopped
+    environment:
+      DATABASE_HOSTNAME: db
+      DATABASE_PORT: 5432
+      DATABASE_USERNAME: podcasts
+      DATABASE_PASSWORD: ${DATABASE_PASSWORD}
+      DATABASE_DATABASE: podcasts
+      HOSTNAME: 0.0.0.0
+      PORT: 8080
+    ports:
+      - "8011:8080"
+    depends_on:
+      - db
+
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: podcasts
+      POSTGRES_PASSWORD: ${DATABASE_PASSWORD}
+      POSTGRES_DB: podcasts
+    volumes:
+      - podcasts_postgres:/var/lib/postgresql/data
+
+volumes:
+  podcasts_postgres:

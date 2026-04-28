@@ -1,77 +1,39 @@
 import SwiftData
-import SwiftUI
+import UIKit
 
-struct AllEpisodesView: View {
-    @Binding var selectedEpisode: EpisodeDTO?
-    @Query(sort: \PodcastSubscription.sortIndex) private var subscriptions: [PodcastSubscription]
-    @State private var playlists = ["Latest", "In Progress", "Downloaded", "Starred"]
-    @State private var episodes: [EpisodeDTO] = []
-    @State private var path: [EpisodeDTO] = []
-    @State private var errorMessage: String?
-    private let client = BackendClient()
+final class AllEpisodesViewController: EpisodeListViewController {
+    private let modelContext: ModelContext
+    private let player: PlayerController
 
-    var body: some View {
-        NavigationStack(path: $path) {
-            List {
-                Section("Playlists") {
-                    ForEach(playlists, id: \.self) { playlist in
-                        NavigationLink(playlist) {
-                            EpisodeListView(title: playlist, subscriptions: playlist == "Latest" ? subscriptions : [])
-                        }
-                    }
-                    .onMove { from, to in playlists.move(fromOffsets: from, toOffset: to) }
-                }
-
-                Section("Latest From Your Library") {
-                    ForEach(episodes) { episode in
-                        EpisodeRow(episode: episode)
-                    }
-                }
-            }
-            .listStyle(.plain)
-            .navigationTitle("All Episodes")
-            .navigationDestination(for: EpisodeDTO.self) { episode in
-                EpisodeDetailView(episode: episode)
-            }
-            .toolbar {
-                EditButton()
-                Button("Refresh", systemImage: "arrow.clockwise") { Task { await load() } }
-            }
-            .onChange(of: selectedEpisode) { _, episode in
-                guard let episode else { return }
-                path = [episode]
-                selectedEpisode = nil
-            }
-            .task(id: subscriptions.map(\.stableID)) { await load() }
-            .overlay {
-                if subscriptions.isEmpty {
-                    ContentUnavailableView("No Subscriptions", systemImage: "square.stack", description: Text("Search for podcasts and add them to your library."))
-                }
-            }
-            .alert("Backend error", isPresented: .constant(errorMessage != nil), actions: {
-                Button("OK") { errorMessage = nil }
-            }, message: { Text(errorMessage ?? "") })
-        }
+    init(modelContext: ModelContext, player: PlayerController) {
+        self.modelContext = modelContext
+        self.player = player
+        super.init(title: "All Episodes", mode: .subscriptions(Self.subscriptionIDs(in: modelContext)), modelContext: modelContext, player: player)
     }
 
-    private func load() async {
-        guard !subscriptions.isEmpty else {
-            episodes = []
-            return
-        }
-        do {
-            let nested = try await withThrowingTaskGroup(of: [EpisodeDTO].self) { group in
-                for subscription in subscriptions {
-                    let podcastID = subscription.stableID
-                    group.addTask { try await client.episodes(for: podcastID) }
-                }
-                var output: [[EpisodeDTO]] = []
-                for try await podcastEpisodes in group { output.append(podcastEpisodes) }
-                return output
-            }
-            episodes = nested
-                .flatMap { $0 }
-                .sorted { ($0.publishedAt ?? .distantPast) > ($1.publishedAt ?? .distantPast) }
-        } catch { errorMessage = error.localizedDescription }
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        navigationItem.rightBarButtonItem = UIBarButtonItem(systemItem: .refresh, primaryAction: UIAction { [weak self] _ in
+            self?.refreshFromSubscriptions()
+        })
+    }
+
+    func openEpisode(_ episode: EpisodeDTO) {
+        showEpisode(episode)
+    }
+
+    private func refreshFromSubscriptions() {
+        let replacement = AllEpisodesViewController(modelContext: modelContext, player: player)
+        navigationController?.setViewControllers([replacement], animated: false)
+    }
+
+    private static func subscriptionIDs(in modelContext: ModelContext) -> [String] {
+        var descriptor = FetchDescriptor<PodcastSubscription>(sortBy: [SortDescriptor(\.sortIndex)])
+        descriptor.includePendingChanges = true
+        return ((try? modelContext.fetch(descriptor)) ?? []).map(\.stableID)
     }
 }

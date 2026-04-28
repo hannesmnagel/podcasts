@@ -93,7 +93,7 @@ enum AppConfiguration {
     }
 }
 
-struct PodcastDTO: Codable, Identifiable, Hashable {
+struct PodcastDTO: Codable, Identifiable, Hashable, Sendable {
     let id: UUID?
     let stableID: String
     let feedURL: String
@@ -102,7 +102,7 @@ struct PodcastDTO: Codable, Identifiable, Hashable {
     let imageURL: String?
 }
 
-struct EpisodeDTO: Codable, Identifiable, Hashable {
+struct EpisodeDTO: Codable, Identifiable, Hashable, Sendable {
     let id: UUID?
     let podcastStableID: String?
     let stableID: String
@@ -114,7 +114,7 @@ struct EpisodeDTO: Codable, Identifiable, Hashable {
     let duration: TimeInterval?
 }
 
-struct EpisodeSearchDTO: Codable, Hashable {
+struct EpisodeSearchDTO: Codable, Hashable, Sendable {
     let podcasts: [PodcastDTO]
     let episodes: [EpisodeDTO]
     let directory: [PodcastDirectoryDTO]
@@ -126,7 +126,7 @@ struct EpisodeSearchDTO: Codable, Hashable {
     }
 }
 
-struct PodcastDirectoryDTO: Codable, Identifiable, Hashable {
+struct PodcastDirectoryDTO: Codable, Identifiable, Hashable, Sendable {
     let title: String
     let feedURL: String
     let artistName: String?
@@ -136,26 +136,26 @@ struct PodcastDirectoryDTO: Codable, Identifiable, Hashable {
     var id: String { feedURL }
 }
 
-struct CreatePodcastDTO: Codable {
+struct CreatePodcastDTO: Codable, Sendable {
     let feedURL: String
     let title: String?
     let crawlImmediately: Bool?
 }
 
-struct ArtifactDemandDTO: Codable {
+struct ArtifactDemandDTO: Codable, Sendable {
     let transcript: Bool
     let chapters: Bool
     let fingerprint: Bool
 }
 
-struct ArtifactRequestDTO: Codable {
+struct ArtifactRequestDTO: Codable, Sendable {
     let episodeID: String
     let transcriptCount: Int
     let chapterCount: Int
     let fingerprintCount: Int
 }
 
-struct TranscriptArtifactDTO: Codable, Hashable {
+struct TranscriptArtifactDTO: Codable, Hashable, Sendable {
     let id: UUID?
     let locale: String
     let model: String
@@ -163,13 +163,13 @@ struct TranscriptArtifactDTO: Codable, Hashable {
     let textHash: String
 }
 
-struct ChapterArtifactDTO: Codable, Hashable {
+struct ChapterArtifactDTO: Codable, Hashable, Sendable {
     let id: UUID?
     let source: String
     let chaptersJSON: String
 }
 
-struct EpisodeChapterDTO: Codable, Identifiable, Hashable {
+struct EpisodeChapterDTO: Codable, Identifiable, Hashable, Sendable {
     let start: TimeInterval
     let end: TimeInterval?
     let title: String

@@ -1,54 +1,80 @@
-import SwiftUI
+import Combine
+import SwiftData
+import UIKit
 
-struct RootTabView: View {
-    private enum AppTab {
-        case episodes
-        case podcasts
-        case search
+final class RootTabController: UITabBarController {
+    private let modelContext: ModelContext
+    private let player: PlayerController
+    private let miniPlayer: MiniPlayerView
+    private var miniPlayerAccessory: UITabAccessory?
+    private var cancellables: Set<AnyCancellable> = []
+
+    private lazy var episodesController = AllEpisodesViewController(modelContext: modelContext, player: player)
+    private lazy var podcastsController = AllPodcastsViewController(modelContext: modelContext, player: player)
+    private lazy var searchController = SearchViewController(modelContext: modelContext, player: player)
+
+    init(modelContext: ModelContext, player: PlayerController) {
+        self.modelContext = modelContext
+        self.player = player
+        self.miniPlayer = MiniPlayerView(modelContext: modelContext, player: player)
+        super.init(nibName: nil, bundle: nil)
     }
 
-    @StateObject private var player = PlayerController()
-    @State private var showNowPlaying = false
-    @State private var selectedTab: AppTab = .episodes
-    @State private var selectedEpisode: EpisodeDTO?
-    @State private var selectedPodcastID: String?
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
 
-    var body: some View {
-        TabView(selection: $selectedTab) {
-            AllEpisodesView(selectedEpisode: $selectedEpisode)
-                .tabItem { Label("Episodes", systemImage: "list.bullet") }
-                .tag(AppTab.episodes)
-            AllPodcastsView(selectedPodcastID: $selectedPodcastID)
-                .tabItem { Label("Podcasts", systemImage: "square.stack") }
-                .tag(AppTab.podcasts)
-            SearchView()
-                .tabItem { Label("Search", systemImage: "magnifyingglass") }
-                .tag(AppTab.search)
-        }
-        .tabViewBottomAccessory(isEnabled: player.currentEpisode != nil) {
-            MiniPlayerView(showNowPlaying: $showNowPlaying)
-                .environmentObject(player)
-        }
-        .environmentObject(player)
-        .fullScreenCover(isPresented: $showNowPlaying) {
-            NowPlayingView(
-                showEpisodeDetails: showEpisodeDetails,
-                showPodcast: showPodcast
-            )
-                .environmentObject(player)
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        episodesController.tabBarItem = UITabBarItem(title: "Episodes", image: UIImage(systemName: "list.bullet"), tag: 0)
+        podcastsController.tabBarItem = UITabBarItem(title: "Podcasts", image: UIImage(systemName: "square.stack"), tag: 1)
+        searchController.tabBarItem = UITabBarItem(title: "Search", image: UIImage(systemName: "magnifyingglass"), tag: 2)
+
+        viewControllers = [
+            UINavigationController(rootViewController: episodesController),
+            UINavigationController(rootViewController: podcastsController),
+            UINavigationController(rootViewController: searchController)
+        ]
+        configureMiniPlayer()
+    }
+
+    private func configureMiniPlayer() {
+        miniPlayer.openNowPlaying = { [weak self] in self?.presentNowPlaying() }
+        player.$currentEpisode.receive(on: DispatchQueue.main).sink { [weak self] episode in
+            NSLog("[PodcastsDebug][RootTab] currentEpisode changed visible=%@", episode == nil ? "false" : "true")
+            self?.setMiniPlayerVisible(episode != nil)
+        }.store(in: &cancellables)
+    }
+
+    private func setMiniPlayerVisible(_ isVisible: Bool) {
+        NSLog("[PodcastsDebug][RootTab] setMiniPlayerVisible %@", isVisible ? "true" : "false")
+        if isVisible {
+            if miniPlayerAccessory == nil {
+                NSLog("[PodcastsDebug][RootTab] creating UITabAccessory")
+                miniPlayerAccessory = UITabAccessory(contentView: miniPlayer)
+            }
+            NSLog("[PodcastsDebug][RootTab] installing UITabAccessory")
+            setBottomAccessory(miniPlayerAccessory, animated: false)
+        } else {
+            NSLog("[PodcastsDebug][RootTab] removing UITabAccessory")
+            setBottomAccessory(nil, animated: false)
         }
     }
 
-    private func showEpisodeDetails(_ episode: EpisodeDTO) {
-        showNowPlaying = false
-        selectedTab = .episodes
-        selectedEpisode = episode
-    }
-
-    private func showPodcast(_ episode: EpisodeDTO) {
-        guard let podcastStableID = episode.podcastStableID else { return }
-        showNowPlaying = false
-        selectedTab = .podcasts
-        selectedPodcastID = podcastStableID
+    private func presentNowPlaying() {
+        let nowPlaying = NowPlayingViewController(modelContext: modelContext, player: player)
+        nowPlaying.modalPresentationStyle = .fullScreen
+        nowPlaying.showEpisodeDetails = { [weak self, weak nowPlaying] episode in
+            nowPlaying?.dismiss(animated: true)
+            self?.selectedIndex = 0
+            self?.episodesController.openEpisode(episode)
+        }
+        nowPlaying.showPodcast = { [weak self, weak nowPlaying] episode in
+            guard let podcastID = episode.podcastStableID else { return }
+            nowPlaying?.dismiss(animated: true)
+            self?.selectedIndex = 1
+            self?.podcastsController.openPodcast(podcastID)
+        }
+        present(nowPlaying, animated: true)
     }
 }

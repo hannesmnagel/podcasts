@@ -11,7 +11,7 @@ enum EpisodeListMode {
 }
 
 class EpisodeListViewController: UITableViewController {
-    private let mode: EpisodeListMode
+    private var mode: EpisodeListMode
     private let modelContext: ModelContext
     private let player: PlayerController
     private let client = BackendClient()
@@ -20,6 +20,7 @@ class EpisodeListViewController: UITableViewController {
     private var playedEpisodeIDs: Set<String> = []
     private var deletedEpisodeIDs: Set< String> = []
     private var downloadedEpisodeIDs: Set<String> = []
+    private var summarySnippets: [String: String] = [:]
     private let podcastHeaderView = PodcastDetailHeaderView()
     private var downloadProgressCancellable: AnyCancellable?
     private var isLoading = false
@@ -58,12 +59,14 @@ class EpisodeListViewController: UITableViewController {
         super.viewWillAppear(animated)
         navigationController?.setToolbarHidden(!isEditing, animated: animated)
         tabBarController?.setTabBarHidden(isEditing, animated: animated)
+        (tabBarController as? RootTabController)?.setMiniPlayerSuppressed(isEditing, animated: animated)
     }
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
         navigationController?.setToolbarHidden(true, animated: animated)
         tabBarController?.setTabBarHidden(false, animated: animated)
+        (tabBarController as? RootTabController)?.setMiniPlayerSuppressed(false, animated: animated)
     }
 
     override func viewDidLayoutSubviews() {
@@ -84,6 +87,7 @@ class EpisodeListViewController: UITableViewController {
         let episode = visibleEpisodeSnapshot[indexPath.row]
         cell.configure(
             episode: episode,
+            summaryText: summarySnippets[episode.stableID] ?? episode.summary,
             artworkURL: LibraryStore.localArtworkURL(for: episode, in: modelContext),
             isPlayed: playedEpisodeIDs.contains(episode.stableID),
             dimsPlayed: showsPlayedEpisodes,
@@ -113,6 +117,7 @@ class EpisodeListViewController: UITableViewController {
         refreshControl?.isEnabled = !editing
         navigationController?.setToolbarHidden(!editing, animated: animated)
         tabBarController?.setTabBarHidden(editing, animated: animated)
+        (tabBarController as? RootTabController)?.setMiniPlayerSuppressed(editing, animated: animated)
         updateSelectionToolbar()
     }
 
@@ -245,6 +250,11 @@ class EpisodeListViewController: UITableViewController {
         navigationController?.pushViewController(EpisodeDetailViewController(episode: episode, modelContext: modelContext, player: player), animated: true)
     }
 
+    func reload(mode: EpisodeListMode) {
+        self.mode = mode
+        Task { await load() }
+    }
+
     private var showsPlayedEpisodes: Bool {
         if case .podcast = mode { return true }
         return false
@@ -272,6 +282,7 @@ class EpisodeListViewController: UITableViewController {
         }
 
         do {
+            await refreshPodcastMetadataIfNeeded()
             episodes = try await loadEpisodes()
             refreshEpisodeStateSets()
             refreshVisibleEpisodeSnapshot()
@@ -288,6 +299,9 @@ class EpisodeListViewController: UITableViewController {
     private func loadEpisodes() async throws -> [EpisodeDTO] {
         switch mode {
         case .podcast(let podcastID):
+            if let podcast = try? await client.crawlPodcast(podcastID) {
+                LibraryStore.subscribe(to: podcast, in: modelContext)
+            }
             let fetched = try await client.episodes(for: podcastID)
             await LibraryStore.cacheEpisodes(fetched, in: modelContext)
             return LibraryStore.localEpisodes(forPodcastIDs: [podcastID], in: modelContext)
@@ -305,7 +319,10 @@ class EpisodeListViewController: UITableViewController {
     private func loadSubscriptions(_ podcastIDs: [String]) async throws -> [EpisodeDTO] {
         try await withThrowingTaskGroup(of: (String, [EpisodeDTO]).self) { group in
             for podcastID in podcastIDs {
-                group.addTask { (podcastID, try await self.client.episodes(for: podcastID)) }
+                group.addTask {
+                    _ = try? await self.client.crawlPodcast(podcastID)
+                    return (podcastID, try await self.client.episodes(for: podcastID))
+                }
             }
             var fetched: [EpisodeDTO] = []
             for try await (_, podcastEpisodes) in group {
@@ -314,6 +331,13 @@ class EpisodeListViewController: UITableViewController {
             }
             return LibraryStore.localEpisodes(forPodcastIDs: podcastIDs, in: modelContext)
         }
+    }
+
+    private func refreshPodcastMetadataIfNeeded() async {
+        guard case .podcast = mode else { return }
+        guard let podcasts = try? await client.podcasts() else { return }
+        LibraryStore.updateExistingSubscriptions(with: podcasts, in: modelContext)
+        configurePodcastHeaderIfNeeded()
     }
 
     private func cachedEpisodes() -> [EpisodeDTO] {
@@ -334,6 +358,7 @@ class EpisodeListViewController: UITableViewController {
         playedEpisodeIDs = sets.played
         deletedEpisodeIDs = sets.deleted
         downloadedEpisodeIDs = sets.downloaded
+        summarySnippets = LibraryStore.summarySnippets(for: episodes, in: modelContext)
     }
 
     private func refreshVisibleEpisodeSnapshot() {
@@ -386,14 +411,19 @@ class EpisodeListViewController: UITableViewController {
         let count = selectedEpisodes.count
         let play = UIBarButtonItem(image: UIImage(systemName: "play.fill"), style: .plain, target: self, action: #selector(playSelected))
         play.tintColor = .systemOrange
+        play.accessibilityLabel = "Play Selected"
         play.isEnabled = count == 1
-        let played = UIBarButtonItem(title: "Played", style: .plain, target: self, action: #selector(markSelectedPlayed))
+        let played = UIBarButtonItem(image: UIImage(systemName: "checkmark.circle"), style: .plain, target: self, action: #selector(markSelectedPlayed))
+        played.accessibilityLabel = "Mark as Played"
         played.isEnabled = count > 0
-        let unplayed = UIBarButtonItem(title: "Unplayed", style: .plain, target: self, action: #selector(markSelectedUnplayed))
+        let unplayed = UIBarButtonItem(image: UIImage(systemName: "circle"), style: .plain, target: self, action: #selector(markSelectedUnplayed))
+        unplayed.accessibilityLabel = "Mark as Unplayed"
         unplayed.isEnabled = count > 0
-        let download = UIBarButtonItem(title: "Download", style: .plain, target: self, action: #selector(downloadSelected))
+        let download = UIBarButtonItem(image: UIImage(systemName: "arrow.down.circle"), style: .plain, target: self, action: #selector(downloadSelected))
+        download.accessibilityLabel = "Download"
         download.isEnabled = count > 0
-        let removeDownload = UIBarButtonItem(title: "Remove DL", style: .plain, target: self, action: #selector(removeSelectedDownloads))
+        let removeDownload = UIBarButtonItem(image: UIImage(systemName: "trash"), style: .plain, target: self, action: #selector(removeSelectedDownloads))
+        removeDownload.accessibilityLabel = "Remove Download"
         removeDownload.tintColor = .systemRed
         removeDownload.isEnabled = count > 0
         toolbarItems = [
@@ -716,11 +746,11 @@ final class EpisodeCell: UITableViewCell {
         playTapped = nil
     }
 
-    func configure(episode: EpisodeDTO, artworkURL: URL?, isPlayed: Bool, dimsPlayed: Bool, player: PlayerController) {
+    func configure(episode: EpisodeDTO, summaryText: String?, artworkURL: URL?, isPlayed: Bool, dimsPlayed: Bool, player: PlayerController) {
         episodeID = episode.stableID
         titleLabel.text = episode.title
         metadataLabel.text = episode.publishedAt?.formatted(date: .abbreviated, time: .omitted) ?? " "
-        summaryLabel.text = episode.summary?.isEmpty == false ? episode.summary : " "
+        summaryLabel.text = summaryText?.isEmpty == false ? summaryText : " "
         artworkView.load(url: artworkURL)
         contentView.alpha = dimsPlayed && isPlayed ? 0.48 : 1
         updatePlayButton(player: player)
@@ -781,10 +811,13 @@ final class EpisodeCell: UITableViewCell {
 
 final class ArtworkImageView: UIImageView {
     private static let cache = NSCache<NSString, UIImage>()
+    private static let defaultPlaceholderSize = CGSize(width: 96, height: 96)
     private var task: Task<Void, Never>?
     private var representedURL: URL?
     private var loadedURL: URL?
     private var loadedMinimumPixelDimension: CGFloat = 0
+    private var isShowingPlaceholder = false
+    private let placeholderLayer = CAShapeLayer()
 
     init(cornerRadius: CGFloat) {
         super.init(frame: .zero)
@@ -793,6 +826,9 @@ final class ArtworkImageView: UIImageView {
         clipsToBounds = true
         layer.cornerRadius = cornerRadius
         tintColor = .secondaryLabel
+        placeholderLayer.fillColor = UIColor.secondaryLabel.withAlphaComponent(0.62).cgColor
+        placeholderLayer.isHidden = true
+        layer.addSublayer(placeholderLayer)
     }
 
     required init?(coder: NSCoder) {
@@ -800,6 +836,15 @@ final class ArtworkImageView: UIImageView {
     }
 
     func load(url: URL?, minimumPixelDimension: CGFloat = 160) {
+        if url == nil {
+            cancel()
+            representedURL = nil
+            loadedURL = nil
+            loadedMinimumPixelDimension = minimumPixelDimension
+            setPlaceholderImage()
+            return
+        }
+
         if loadedURL == url,
            loadedMinimumPixelDimension >= minimumPixelDimension {
             return
@@ -813,13 +858,14 @@ final class ArtworkImageView: UIImageView {
         representedURL = url
         loadedURL = nil
         loadedMinimumPixelDimension = minimumPixelDimension
-        image = UIImage(systemName: "waveform")
-        backgroundColor = .secondarySystemFill
+        setPlaceholderImage()
         guard let url else { return }
 
         let cacheKey = Self.cacheKey(for: url, minimumPixelDimension: minimumPixelDimension)
         if let cached = Self.cache.object(forKey: cacheKey as NSString) {
             backgroundColor = nil
+            isShowingPlaceholder = false
+            placeholderLayer.isHidden = true
             image = cached
             loadedURL = url
             loadedMinimumPixelDimension = minimumPixelDimension
@@ -835,10 +881,19 @@ final class ArtworkImageView: UIImageView {
                 Self.cache.setObject(image, forKey: cacheKey as NSString)
                 guard self?.representedURL == url else { return }
                 self?.backgroundColor = nil
+                self?.isShowingPlaceholder = false
+                self?.placeholderLayer.isHidden = true
                 self?.image = image
                 self?.loadedURL = url
                 self?.loadedMinimumPixelDimension = minimumPixelDimension
             }
+        }
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        if isShowingPlaceholder {
+            setPlaceholderImage()
         }
     }
 
@@ -847,7 +902,7 @@ final class ArtworkImageView: UIImageView {
         task = nil
     }
 
-    private static func loadImage(url: URL, targetSize: CGSize, scale: CGFloat, minimumPixelDimension: CGFloat) async -> CGImage? {
+    nonisolated private static func loadImage(url: URL, targetSize: CGSize, scale: CGFloat, minimumPixelDimension: CGFloat) async -> CGImage? {
         let data: Data?
         if url.isFileURL {
             data = try? Data(contentsOf: url)
@@ -858,7 +913,7 @@ final class ArtworkImageView: UIImageView {
         return downsample(data: data, targetSize: targetSize, scale: scale, minimumPixelDimension: minimumPixelDimension)
     }
 
-    private static func downsample(data: Data, targetSize: CGSize, scale: CGFloat, minimumPixelDimension: CGFloat) -> CGImage? {
+    nonisolated private static func downsample(data: Data, targetSize: CGSize, scale: CGFloat, minimumPixelDimension: CGFloat) -> CGImage? {
         let options = [kCGImageSourceShouldCache: false] as CFDictionary
         guard let source = CGImageSourceCreateWithData(data as CFData, options) else { return nil }
         let maxDimension = max(targetSize.width, targetSize.height) * scale
@@ -871,8 +926,47 @@ final class ArtworkImageView: UIImageView {
         return CGImageSourceCreateThumbnailAtIndex(source, 0, thumbnailOptions)
     }
 
-    private static func cacheKey(for url: URL, minimumPixelDimension: CGFloat) -> String {
+    nonisolated private static func cacheKey(for url: URL, minimumPixelDimension: CGFloat) -> String {
         "\(url.absoluteString)#\(Int(minimumPixelDimension.rounded(.up)))"
+    }
+
+    static func preload(url: URL?, targetSize: CGSize = CGSize(width: 370, height: 370), scale: CGFloat = 3, minimumPixelDimension: CGFloat = 1200) {
+        guard let url else { return }
+        let cacheKey = cacheKey(for: url, minimumPixelDimension: minimumPixelDimension)
+        guard cache.object(forKey: cacheKey as NSString) == nil else { return }
+        Task {
+            guard let cgImage = await loadImage(url: url, targetSize: targetSize, scale: scale, minimumPixelDimension: minimumPixelDimension) else { return }
+            cache.setObject(UIImage(cgImage: cgImage), forKey: cacheKey as NSString)
+        }
+    }
+
+    private func setPlaceholderImage() {
+        isShowingPlaceholder = true
+        backgroundColor = .secondarySystemFill
+        image = nil
+        placeholderLayer.isHidden = false
+        placeholderLayer.fillColor = UIColor.secondaryLabel.resolvedColor(with: traitCollection).withAlphaComponent(0.62).cgColor
+        placeholderLayer.frame = bounds
+        placeholderLayer.path = Self.placeholderPath(in: bounds.isEmpty ? CGRect(origin: .zero, size: Self.defaultPlaceholderSize) : bounds).cgPath
+    }
+
+    private static func placeholderPath(in bounds: CGRect) -> UIBezierPath {
+        let size = bounds.size
+        let path = UIBezierPath()
+        let centerY = bounds.midY
+        let base = min(size.width, size.height)
+        let barWidth = base * 0.07
+        let spacing = base * 0.08
+        let heights = [0.22, 0.54, 0.94, 0.42, 0.74, 0.30].map { base * $0 }
+        let totalWidth = CGFloat(heights.count) * barWidth + CGFloat(heights.count - 1) * spacing
+        var x = bounds.minX + (size.width - totalWidth) / 2
+
+        for height in heights {
+            let rect = CGRect(x: x, y: centerY - height / 2, width: barWidth, height: height)
+            path.append(UIBezierPath(roundedRect: rect, cornerRadius: barWidth / 2))
+            x += barWidth + spacing
+        }
+        return path
     }
 }
 

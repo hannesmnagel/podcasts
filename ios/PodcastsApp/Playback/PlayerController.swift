@@ -69,7 +69,9 @@ final class PlayerController: ObservableObject {
             player.pause()
             isPlaying = false
         }
-        updateNowPlaying(for: episode, artworkURL: artworkURL ?? episode.imageURL.flatMap(URL.init))
+        let displayArtworkURL = artworkURL ?? episode.imageURL.flatMap(URL.init)
+        ArtworkImageView.preload(url: displayArtworkURL)
+        updateNowPlaying(for: episode, artworkURL: displayArtworkURL)
     }
 
     func togglePlayPause() {

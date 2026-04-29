@@ -22,6 +22,7 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
     private var swipePanelCacheKey: String?
     private var appliedSpeedEpisodeID: String?
     private var didSetInitialMediaPage = false
+    private var hasInteractedWithMediaPager = false
 
     var showEpisodeDetails: ((EpisodeDTO) -> Void)?
     var showPodcast: ((EpisodeDTO) -> Void)?
@@ -67,6 +68,10 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
         configureDismissGesture()
         bindPlayer()
         update()
+        Task { @MainActor in
+            await Task.yield()
+            ensureInitialMediaPage()
+        }
         Task {
             loadCachedArtifacts()
             await loadArtifacts()
@@ -75,10 +80,18 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
+        ensureInitialMediaPage()
+    }
+
+    private func ensureInitialMediaPage() {
         guard contentContainer.bounds.width > 0 else { return }
-        if didSetInitialMediaPage, displayMode != .artwork { return }
+        guard displayMode == .artwork, !hasInteractedWithMediaPager else { return }
+        let width = contentContainer.bounds.width
+        guard contentContainer.contentSize.width >= width * 2.5 else { return }
+        let targetOffset = CGPoint(x: width, y: 0)
+        guard !didSetInitialMediaPage || abs(contentContainer.contentOffset.x - targetOffset.x) > 0.5 else { return }
         didSetInitialMediaPage = true
-        contentContainer.setContentOffset(CGPoint(x: contentContainer.bounds.width, y: 0), animated: false)
+        contentContainer.setContentOffset(targetOffset, animated: false)
     }
 
     private func configureLayout() {
@@ -119,6 +132,7 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
         contentContainer.showsVerticalScrollIndicator = false
         contentContainer.alwaysBounceHorizontal = true
         contentContainer.alwaysBounceVertical = false
+        contentContainer.isDirectionalLockEnabled = true
         contentContainer.contentInsetAdjustmentBehavior = .never
         mediaPageStack.translatesAutoresizingMaskIntoConstraints = false
         mediaPageStack.axis = .horizontal
@@ -229,8 +243,7 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
         bottom.alignment = .center
 
         [titleStack, contentContainer, progressRow, timeRow, controls, bottom].forEach(view.addSubview)
-        let artworkWidth = contentContainer.widthAnchor.constraint(equalTo: view.widthAnchor, multiplier: 0.72)
-        artworkWidth.priority = .defaultHigh
+        let artworkWidth = contentContainer.widthAnchor.constraint(equalTo: view.widthAnchor, multiplier: 0.94)
 
         progressHeightConstraint = progressControl.heightAnchor.constraint(equalToConstant: 34)
         NSLayoutConstraint.activate([
@@ -431,7 +444,7 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
         titleLabel.text = episode.title
         podcastLabel.text = podcastTitle(for: episode).uppercased()
         dateLabel.text = episode.publishedAt?.formatted(date: .abbreviated, time: .omitted)
-        artworkView.load(url: currentArtworkURL(for: episode), minimumPixelDimension: 1200)
+        artworkView.load(url: primaryArtworkURL(for: episode), minimumPixelDimension: 1200)
         currentChapterLabel.text = currentChapterTitle()
         updateSwipePanelsIfNeeded(for: episode)
         updateTranscriptPlaybackPosition()
@@ -553,8 +566,11 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
         let notesTitle = panelTitle("Show Notes")
         notesTitle.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 12, leading: 0, bottom: 0, trailing: 0)
         chaptersNotesStack.addArrangedSubview(notesTitle)
-        let notesText = episode.summary.map(ShowNotesProcessor.plainText).flatMap { $0.isEmpty ? nil : $0 } ?? "No show notes."
-        chaptersNotesStack.addArrangedSubview(panelBody(notesText))
+        if let summary = episode.summary, !summary.isEmpty {
+            chaptersNotesStack.addArrangedSubview(ShowNotesText.view(raw: summary, textColor: .label, secondaryColor: .secondaryLabel))
+        } else {
+            chaptersNotesStack.addArrangedSubview(panelBody("No show notes."))
+        }
     }
 
     private func panelTitle(_ text: String) -> UILabel {
@@ -616,6 +632,11 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
     func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
         guard scrollView === contentContainer else { return }
         updateDisplayModeForCurrentPage()
+    }
+
+    func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+        guard scrollView === contentContainer else { return }
+        hasInteractedWithMediaPager = true
     }
 
     func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
@@ -700,7 +721,7 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
         transcriptSegments = LibraryStore.cachedTranscriptSegments(for: episode, in: modelContext)
         Task {
             chapters = await preferredChapters(for: episode)
-            player.updateNowPlayingArtwork(url: currentArtworkURL(for: episode))
+            player.updateNowPlayingArtwork(url: primaryArtworkURL(for: episode))
             update()
         }
     }
@@ -718,7 +739,7 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
         } else {
             chapters = await preferredChapters(for: episode)
         }
-        player.updateNowPlayingArtwork(url: currentArtworkURL(for: episode))
+        player.updateNowPlayingArtwork(url: primaryArtworkURL(for: episode))
         update()
     }
 
@@ -732,7 +753,11 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
         chapters
             .last { $0.start <= player.elapsed }
             .flatMap { LibraryStore.cachedChapterImageURL(for: $0, episode: episode, in: modelContext) ?? $0.displayImageURL }
-            ?? LibraryStore.localArtworkURL(for: episode, in: modelContext)
+            ?? primaryArtworkURL(for: episode)
+    }
+
+    private func primaryArtworkURL(for episode: EpisodeDTO) -> URL? {
+        LibraryStore.localArtworkURL(for: episode, in: modelContext)
     }
 
     private func currentChapterTitle() -> String? {
@@ -873,9 +898,9 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
         guard let pan = gestureRecognizer as? UIPanGestureRecognizer else { return true }
         let velocity = pan.velocity(in: view)
         if gestureRecognizer === artworkDismissPan {
-            return velocity.y > abs(velocity.x) && velocity.y > 0
+            return velocity.y > 0 && abs(velocity.y) > abs(velocity.x) * 0.65
         }
-        return velocity.y > abs(velocity.x) && velocity.y > 0
+        return velocity.y > 0 && abs(velocity.y) > abs(velocity.x) * 0.65
     }
 
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {

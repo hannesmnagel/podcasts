@@ -17,6 +17,7 @@ final class AllEpisodesViewController: EpisodeListViewController {
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
+        reload(mode: .subscriptions(Self.subscriptionIDs(in: modelContext)))
         navigationItem.rightBarButtonItem = UIBarButtonItem(systemItem: .refresh, primaryAction: UIAction { [weak self] _ in
             self?.refreshFromSubscriptions()
         })
@@ -27,8 +28,7 @@ final class AllEpisodesViewController: EpisodeListViewController {
     }
 
     private func refreshFromSubscriptions() {
-        let replacement = AllEpisodesViewController(modelContext: modelContext, player: player)
-        navigationController?.setViewControllers([replacement], animated: false)
+        reload(mode: .subscriptions(Self.subscriptionIDs(in: modelContext)))
     }
 
     private static func subscriptionIDs(in modelContext: ModelContext) -> [String] {

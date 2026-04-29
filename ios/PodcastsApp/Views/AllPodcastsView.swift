@@ -8,6 +8,7 @@ final class AllPodcastsViewController: UITableViewController, UIDocumentPickerDe
     private let client = BackendClient()
     private var subscriptions: [PodcastSubscription] = []
     private weak var activeAppSettingsController: AppSettingsViewController?
+    private var isRefreshingPodcastMetadata = false
 
     init(modelContext: ModelContext, player: PlayerController) {
         self.modelContext = modelContext
@@ -30,19 +31,23 @@ final class AllPodcastsViewController: UITableViewController, UIDocumentPickerDe
         navigationItem.rightBarButtonItem = editButtonItem
         updateSelectionToolbar()
         load()
+        refreshPodcastMetadata()
     }
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         load()
+        refreshPodcastMetadata()
         navigationController?.setToolbarHidden(!isEditing, animated: animated)
         tabBarController?.setTabBarHidden(isEditing, animated: animated)
+        (tabBarController as? RootTabController)?.setMiniPlayerSuppressed(isEditing, animated: animated)
     }
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
         navigationController?.setToolbarHidden(true, animated: animated)
         tabBarController?.setTabBarHidden(false, animated: animated)
+        (tabBarController as? RootTabController)?.setMiniPlayerSuppressed(false, animated: animated)
     }
 
     override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
@@ -78,6 +83,7 @@ final class AllPodcastsViewController: UITableViewController, UIDocumentPickerDe
         tableView.setEditing(editing, animated: animated)
         navigationController?.setToolbarHidden(!editing, animated: animated)
         tabBarController?.setTabBarHidden(editing, animated: animated)
+        (tabBarController as? RootTabController)?.setMiniPlayerSuppressed(editing, animated: animated)
         updateSelectionToolbar()
     }
 
@@ -122,6 +128,25 @@ final class AllPodcastsViewController: UITableViewController, UIDocumentPickerDe
         tableView.reloadData()
         updateEmptyState()
         updateSelectionToolbar()
+    }
+
+    private func refreshPodcastMetadata() {
+        guard !isRefreshingPodcastMetadata else { return }
+        isRefreshingPodcastMetadata = true
+        let missingMetadataIDs = subscriptions
+            .filter { $0.podcastDescription?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false || $0.artworkURL == nil }
+            .map(\.stableID)
+        Task {
+            defer { isRefreshingPodcastMetadata = false }
+            for podcastID in missingMetadataIDs {
+                if let podcast = try? await client.crawlPodcast(podcastID) {
+                    LibraryStore.subscribe(to: podcast, in: modelContext)
+                }
+            }
+            guard let podcasts = try? await client.podcasts() else { return }
+            LibraryStore.updateExistingSubscriptions(with: podcasts, in: modelContext)
+            load()
+        }
     }
 
     private func updateEmptyState() {
@@ -317,7 +342,7 @@ final class AppSettingsViewController: UITableViewController {
             for subscription in imports {
                 statusText = "Importing \(added + 1) of \(imports.count)..."
                 tableView.reloadData()
-                let podcast = try await client.addPodcast(feedURL: subscription.feedURL)
+                let podcast = await client.hydratedPodcast(afterAdding: try await client.addPodcast(feedURL: subscription.feedURL))
                 LibraryStore.subscribe(to: podcast, in: modelContext)
                 added += 1
                 await Task.yield()

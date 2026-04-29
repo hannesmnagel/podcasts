@@ -3,7 +3,7 @@ import Foundation
 enum ShowNotesProcessor {
     static func plainText(_ html: String) -> String {
         let anchorExpanded = expandAnchors(in: html)
-        return decodeEntities(stripTags(anchorExpanded))
+        return anchorExpanded.decodingHTMLEntities().strippingHTMLTags()
             .replacingOccurrences(of: #"\s+\n"#, with: "\n", options: .regularExpression)
             .replacingOccurrences(of: #"\n\s+"#, with: "\n", options: .regularExpression)
             .replacingOccurrences(of: #"[ \t]{2,}"#, with: " ", options: .regularExpression)
@@ -62,23 +62,11 @@ enum ShowNotesProcessor {
     }
 
     private static func stripTags(_ html: String) -> String {
-        html
-            .replacingOccurrences(of: #"(?i)<br\s*/?>"#, with: "\n", options: .regularExpression)
-            .replacingOccurrences(of: #"(?i)</p\s*>"#, with: "\n\n", options: .regularExpression)
-            .replacingOccurrences(of: #"(?i)</li\s*>"#, with: "\n", options: .regularExpression)
-            .replacingOccurrences(of: #"<[^>]+>"#, with: "", options: .regularExpression)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        html.strippingHTMLTags()
     }
 
     private static func decodeEntities(_ value: String) -> String {
-        value
-            .replacingOccurrences(of: "&nbsp;", with: " ")
-            .replacingOccurrences(of: "&amp;", with: "&")
-            .replacingOccurrences(of: "&quot;", with: "\"")
-            .replacingOccurrences(of: "&#39;", with: "'")
-            .replacingOccurrences(of: "&apos;", with: "'")
-            .replacingOccurrences(of: "&lt;", with: "<")
-            .replacingOccurrences(of: "&gt;", with: ">")
+        value.decodingHTMLEntities()
     }
 
     private static func matchRangeAt(_ index: Int, in match: NSTextCheckingResult, source: String) -> Range<String.Index>? {
@@ -107,5 +95,159 @@ enum ShowNotesProcessor {
         }
         output += String(html[cursor..<html.endIndex])
         return output
+    }
+}
+
+struct ShowNotesBlock {
+    enum Kind {
+        case heading(String)
+        case paragraph(String)
+        case bulletList([String])
+    }
+
+    let kind: Kind
+}
+
+enum ShowNotesBlockParser {
+    static func parse(_ raw: String) -> [ShowNotesBlock] {
+        let normalized = expandAnchors(in: raw)
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+            .replacingOccurrences(of: #"(?i)<br\s*/?>"#, with: "\n", options: .regularExpression)
+            .replacingOccurrences(of: #"(?i)</p\s*>"#, with: "\n\n", options: .regularExpression)
+            .replacingOccurrences(of: #"(?i)</li\s*>"#, with: "\n", options: .regularExpression)
+            .replacingOccurrences(of: #"(?i)<li[^>]*>"#, with: "\n- ", options: .regularExpression)
+            .strippingHTMLTags()
+            .decodingHTMLEntities()
+
+        let lines = normalized
+            .components(separatedBy: "\n")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+        var blocks: [ShowNotesBlock] = []
+        var paragraphLines: [String] = []
+        var bullets: [String] = []
+
+        func flushParagraph() {
+            let text = paragraphLines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+            if !text.isEmpty {
+                blocks.append(ShowNotesBlock(kind: .paragraph(text)))
+            }
+            paragraphLines.removeAll()
+        }
+
+        func flushBullets() {
+            if !bullets.isEmpty {
+                blocks.append(ShowNotesBlock(kind: .bulletList(bullets)))
+            }
+            bullets.removeAll()
+        }
+
+        for line in lines {
+            guard !line.isEmpty else {
+                flushParagraph()
+                flushBullets()
+                continue
+            }
+
+            if isHeading(line) {
+                flushParagraph()
+                flushBullets()
+                blocks.append(ShowNotesBlock(kind: .heading(line)))
+            } else if let bullet = bulletText(from: line) {
+                flushParagraph()
+                bullets.append(bullet)
+            } else {
+                flushBullets()
+                paragraphLines.append(line)
+            }
+        }
+
+        flushParagraph()
+        flushBullets()
+        return blocks
+    }
+
+    private static func isHeading(_ line: String) -> Bool {
+        guard line.count <= 64 else { return false }
+        if line.hasSuffix(":") { return true }
+        if line == "Episode Notes" { return true }
+        if line.range(of: #"^[A-Z][A-Za-z0-9 '&/+-]{2,}$"#, options: .regularExpression) != nil,
+           !line.contains("."),
+           !line.contains("http") {
+            return true
+        }
+        return false
+    }
+
+    private static func bulletText(from line: String) -> String? {
+        let prefixes = ["- ", "* ", "• ", "– ", "— "]
+        for prefix in prefixes where line.hasPrefix(prefix) {
+            return String(line.dropFirst(prefix.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return nil
+    }
+
+    private static func expandAnchors(in html: String) -> String {
+        let anchorPattern = #"<a\b[^>]*href\s*=\s*["']([^"']+)["'][^>]*>(.*?)</a>"#
+        guard let regex = try? NSRegularExpression(pattern: anchorPattern, options: [.caseInsensitive, .dotMatchesLineSeparators]) else {
+            return html
+        }
+
+        var output = ""
+        var cursor = html.startIndex
+        let fullRange = NSRange(html.startIndex..<html.endIndex, in: html)
+        for match in regex.matches(in: html, range: fullRange) {
+            guard let matchRange = Range(match.range, in: html) else { continue }
+            output += String(html[cursor..<matchRange.lowerBound])
+            let href = Range(match.range(at: 1), in: html).map { String(html[$0]).decodingHTMLEntities() } ?? ""
+            let label = Range(match.range(at: 2), in: html).map { String(html[$0]).strippingHTMLTags().decodingHTMLEntities() } ?? href
+            output += label.contains(href) || href.isEmpty ? label : "\(label) \(href)"
+            cursor = matchRange.upperBound
+        }
+        output += String(html[cursor..<html.endIndex])
+        return output
+    }
+}
+
+extension String {
+    func decodingHTMLEntities() -> String {
+        var output = self
+            .replacingOccurrences(of: "&nbsp;", with: " ")
+            .replacingOccurrences(of: "&amp;", with: "&")
+            .replacingOccurrences(of: "&quot;", with: "\"")
+            .replacingOccurrences(of: "&#39;", with: "'")
+            .replacingOccurrences(of: "&apos;", with: "'")
+            .replacingOccurrences(of: "&lt;", with: "<")
+            .replacingOccurrences(of: "&gt;", with: ">")
+
+        guard let regex = try? NSRegularExpression(pattern: #"&#(x[0-9A-Fa-f]+|\d+);"#) else {
+            return output
+        }
+
+        let matches = regex.matches(in: output, range: NSRange(output.startIndex..<output.endIndex, in: output)).reversed()
+        for match in matches {
+            guard let fullRange = Range(match.range(at: 0), in: output),
+                  let valueRange = Range(match.range(at: 1), in: output) else { continue }
+            let rawValue = String(output[valueRange])
+            let scalarValue: UInt32?
+            if rawValue.hasPrefix("x") {
+                scalarValue = UInt32(rawValue.dropFirst(), radix: 16)
+            } else {
+                scalarValue = UInt32(rawValue, radix: 10)
+            }
+            guard let scalarValue,
+                  let scalar = UnicodeScalar(scalarValue) else { continue }
+            output.replaceSubrange(fullRange, with: String(Character(scalar)))
+        }
+        return output
+    }
+
+    func strippingHTMLTags() -> String {
+        replacingOccurrences(of: #"(?i)<br\s*/?>"#, with: "\n", options: .regularExpression)
+            .replacingOccurrences(of: #"(?i)</p\s*>"#, with: "\n\n", options: .regularExpression)
+            .replacingOccurrences(of: #"(?i)</li\s*>"#, with: "\n", options: .regularExpression)
+            .replacingOccurrences(of: #"<[^>]+>"#, with: "", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }

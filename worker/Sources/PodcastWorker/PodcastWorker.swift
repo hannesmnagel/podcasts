@@ -13,7 +13,7 @@ struct WorkerConfig {
     var whisperCommand = ProcessInfo.processInfo.environment["PODCAST_WHISPER_COMMAND"] ?? "whisper"
     var whisperModel = ProcessInfo.processInfo.environment["PODCAST_WHISPER_MODEL"] ?? ""
     var ollamaURL = URL(string: ProcessInfo.processInfo.environment["PODCAST_OLLAMA_URL"] ?? "http://localhost:11434")!
-    var ollamaModel = ProcessInfo.processInfo.environment["PODCAST_OLLAMA_MODEL"] ?? "llama3.2:3b"
+    var ollamaModel = ProcessInfo.processInfo.environment["PODCAST_OLLAMA_MODEL"] ?? "llama3.1:8b"
     var minimumChapterSpacing = TimeInterval(ProcessInfo.processInfo.environment["PODCAST_CHAPTER_MIN_SECONDS"] ?? "180") ?? 180
     var maximumChapters = Int(ProcessInfo.processInfo.environment["PODCAST_CHAPTER_MAX_COUNT"] ?? "24") ?? 24
 }
@@ -382,7 +382,7 @@ enum WorkerError: LocalizedError {
     case transcriptTooShort(Int)
     case transcriptSegmentsMissing
     case chapterizationFailed
-    case ollamaInvalidResponse
+    case ollamaInvalidResponse(String)
 
     var errorDescription: String? {
         switch self {
@@ -397,7 +397,7 @@ enum WorkerError: LocalizedError {
         case let .transcriptTooShort(count): "Transcript too short (\(count) chars) — likely a transcription failure"
         case .transcriptSegmentsMissing: "Transcript did not contain decodable timed segments"
         case .chapterizationFailed: "Chapterization did not produce enough chapter boundaries"
-        case .ollamaInvalidResponse: "Ollama did not return valid chapter JSON"
+        case let .ollamaInvalidResponse(reason): "Ollama did not return valid chapter JSON: \(reason)"
         }
     }
 }

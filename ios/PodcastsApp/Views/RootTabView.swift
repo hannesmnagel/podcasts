@@ -7,6 +7,7 @@ final class RootTabController: UITabBarController {
     private let player: PlayerController
     private let miniPlayer: MiniPlayerView
     private var miniPlayerAccessory: UITabAccessory?
+    private var isMiniPlayerSuppressed = false
     private var cancellables: Set<AnyCancellable> = []
 
     private lazy var episodesController = AllEpisodesViewController(modelContext: modelContext, player: player)
@@ -44,7 +45,7 @@ final class RootTabController: UITabBarController {
     private func configureMiniPlayer() {
         miniPlayer.openNowPlaying = { [weak self] in self?.presentNowPlaying() }
         player.$currentEpisode.receive(on: DispatchQueue.main).sink { [weak self] episode in
-            self?.setMiniPlayerVisible(episode != nil)
+            self?.setMiniPlayerVisible(episode != nil && self?.isMiniPlayerSuppressed == false)
         }.store(in: &cancellables)
     }
 
@@ -73,14 +74,24 @@ final class RootTabController: UITabBarController {
         LibraryStore.updatePlaybackState(episode: episode, elapsed: player.elapsed, duration: player.duration, in: modelContext)
     }
 
+    func setMiniPlayerSuppressed(_ isSuppressed: Bool, animated: Bool) {
+        guard isMiniPlayerSuppressed != isSuppressed else { return }
+        isMiniPlayerSuppressed = isSuppressed
+        setMiniPlayerVisible(player.currentEpisode != nil && !isSuppressed, animated: animated)
+    }
+
     private func setMiniPlayerVisible(_ isVisible: Bool) {
+        setMiniPlayerVisible(isVisible, animated: false)
+    }
+
+    private func setMiniPlayerVisible(_ isVisible: Bool, animated: Bool) {
         if isVisible {
             if miniPlayerAccessory == nil {
                 miniPlayerAccessory = UITabAccessory(contentView: miniPlayer)
             }
-            setBottomAccessory(miniPlayerAccessory, animated: false)
+            setBottomAccessory(miniPlayerAccessory, animated: animated)
         } else {
-            setBottomAccessory(nil, animated: false)
+            setBottomAccessory(nil, animated: animated)
         }
     }
 

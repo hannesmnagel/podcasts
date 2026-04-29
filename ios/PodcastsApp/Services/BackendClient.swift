@@ -16,6 +16,29 @@ struct BackendClient: Sendable {
         try await post("podcasts", body: CreatePodcastDTO(feedURL: feedURL.absoluteString, title: nil, crawlImmediately: true))
     }
 
+    func crawlPodcast(_ podcastID: String) async throws -> PodcastDTO {
+        try await post("podcasts/\(podcastID)/crawl")
+    }
+
+    func hydratedPodcast(afterAdding podcast: PodcastDTO) async -> PodcastDTO {
+        if podcast.hasDisplayMetadata { return podcast }
+        if let crawled = try? await crawlPodcast(podcast.stableID), crawled.hasDisplayMetadata {
+            return crawled
+        }
+
+        for delay in [250_000_000, 500_000_000, 1_000_000_000] {
+            try? await Task.sleep(nanoseconds: UInt64(delay))
+            guard let refreshed = try? await podcasts().first(where: { $0.stableID == podcast.stableID }) else {
+                continue
+            }
+            if refreshed.hasDisplayMetadata {
+                return refreshed
+            }
+        }
+
+        return (try? await podcasts().first(where: { $0.stableID == podcast.stableID })) ?? podcast
+    }
+
     func allEpisodes(limit: Int = 100) async throws -> [EpisodeDTO] {
         try await get("episodes?limit=\(limit)")
     }
@@ -53,6 +76,14 @@ struct BackendClient: Sendable {
         request.httpMethod = "POST"
         request.addValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try encoder.encode(body)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try validate(response, data: data)
+        return try decoder.decode(T.self, from: data)
+    }
+
+    private func post<T: Decodable>(_ path: String) async throws -> T {
+        var request = URLRequest(url: url(for: path))
+        request.httpMethod = "POST"
         let (data, response) = try await URLSession.shared.data(for: request)
         try validate(response, data: data)
         return try decoder.decode(T.self, from: data)
@@ -100,6 +131,12 @@ struct PodcastDTO: Codable, Identifiable, Hashable, Sendable {
     let title: String
     let description: String?
     let imageURL: String?
+
+    var hasDisplayMetadata: Bool {
+        !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && description?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+            && imageURL?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+    }
 }
 
 struct EpisodeDTO: Codable, Identifiable, Hashable, Sendable {

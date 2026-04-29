@@ -152,9 +152,10 @@ final class EpisodeDetailViewController: UIViewController {
     }
 
     private func makeNotesSection() -> UIView {
-        let notes = episode.summary.map(ShowNotesProcessor.plainText) ?? "No Episode Notes"
-        let label = bodyLabel(notes)
-        return section(title: "Episode Notes", arrangedSubviews: [label])
+        let notesView = episode.summary.map {
+            ShowNotesText.view(raw: $0)
+        } ?? bodyLabel("No Episode Notes")
+        return section(title: "Episode Notes", arrangedSubviews: [notesView])
     }
 
     private func makeTranscriptSection() -> UIView {

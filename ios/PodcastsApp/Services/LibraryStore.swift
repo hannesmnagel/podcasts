@@ -9,9 +9,9 @@ enum LibraryStore {
         let stableID = podcast.stableID
         let descriptor = FetchDescriptor<PodcastSubscription>(predicate: #Predicate { $0.stableID == stableID })
         if let existing = try? context.fetch(descriptor).first {
-            existing.title = podcast.title.isEmpty ? existing.title : podcast.title
-            existing.podcastDescription = podcast.description ?? existing.podcastDescription
-            existing.artworkURL = podcast.imageURL.flatMap(URL.init(string:)) ?? existing.artworkURL
+            existing.title = nonEmpty(podcast.title) ?? existing.title
+            existing.podcastDescription = nonEmpty(podcast.description) ?? existing.podcastDescription
+            existing.artworkURL = nonEmpty(podcast.imageURL).flatMap(URL.init(string:)) ?? existing.artworkURL
             existing.feedURL = URL(string: podcast.feedURL) ?? existing.feedURL
             return
         }
@@ -19,20 +19,42 @@ enum LibraryStore {
         let subscription = PodcastSubscription(
             stableID: stableID,
             feedURL: feedURL,
-            title: podcast.title.isEmpty ? podcast.feedURL : podcast.title,
-            artworkURL: podcast.imageURL.flatMap(URL.init(string:))
+            title: nonEmpty(podcast.title) ?? podcast.feedURL,
+            artworkURL: nonEmpty(podcast.imageURL).flatMap(URL.init(string:))
         )
-        subscription.podcastDescription = podcast.description
+        subscription.podcastDescription = nonEmpty(podcast.description)
         context.insert(subscription)
+    }
+
+    static func subscribe(to podcasts: [PodcastDTO], in context: ModelContext) {
+        podcasts.forEach { subscribe(to: $0, in: context) }
+    }
+
+    static func updateExistingSubscriptions(with podcasts: [PodcastDTO], in context: ModelContext) {
+        let descriptor = FetchDescriptor<PodcastSubscription>()
+        let existing = (try? context.fetch(descriptor)) ?? []
+        let existingIDs = Set(existing.map(\.stableID))
+        podcasts
+            .filter { existingIDs.contains($0.stableID) }
+            .forEach { subscribe(to: $0, in: context) }
     }
 
     static func unsubscribe(_ subscription: PodcastSubscription, in context: ModelContext) {
         let podcastID = subscription.stableID
-        let descriptor = FetchDescriptor<LocalEpisodeState>()
-        let states = (try? context.fetch(descriptor)) ?? []
-        states.filter { $0.podcastStableID == podcastID }.forEach { state in
-            state.isDeleted = true
-            state.deletedAt = .now
+        let stateDescriptor = FetchDescriptor<LocalEpisodeState>()
+        let states = ((try? context.fetch(stateDescriptor)) ?? []).filter { $0.podcastStableID == podcastID }
+        let episodeIDs = Set(states.map(\.episodeStableID))
+        states.forEach { state in
+            if let downloadedFileURL = state.downloadedFileURL {
+                Task { await LocalMediaCache.removeFileIfPresent(at: downloadedFileURL) }
+            }
+            context.delete(state)
+        }
+
+        let artifactDescriptor = FetchDescriptor<LocalEpisodeArtifact>()
+        let artifacts = (try? context.fetch(artifactDescriptor)) ?? []
+        artifacts.filter { episodeIDs.contains($0.episodeStableID) }.forEach {
+            context.delete($0)
         }
         context.delete(subscription)
     }
@@ -203,6 +225,21 @@ enum LibraryStore {
         }
 
         return (played, deleted, downloaded)
+    }
+
+    static func summarySnippets(for episodes: [EpisodeDTO], in context: ModelContext) -> [String: String] {
+        let episodeIDs = Set(episodes.map(\.stableID))
+        guard !episodeIDs.isEmpty else { return [:] }
+        let descriptor = FetchDescriptor<LocalEpisodeState>()
+        let states = (try? context.fetch(descriptor)) ?? []
+        return Dictionary(uniqueKeysWithValues: states.compactMap { state in
+            guard episodeIDs.contains(state.episodeStableID),
+                  let snippet = state.strippedSummary,
+                  !snippet.isEmpty else {
+                return nil
+            }
+            return (state.episodeStableID, snippet)
+        })
     }
 
     static func localEpisode(for episode: EpisodeDTO, in context: ModelContext) -> EpisodeDTO {
@@ -398,6 +435,13 @@ enum LibraryStore {
         return artifact
     }
 
+    private static func nonEmpty(_ value: String?) -> String? {
+        guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else {
+            return nil
+        }
+        return trimmed
+    }
+
     private static func prefetchImage(for episode: EpisodeDTO, in context: ModelContext) async {
         guard let state = episodeState(for: episode, in: context),
               state.cachedImageFileURL == nil,
@@ -453,7 +497,7 @@ private extension LocalEpisodeState {
             podcastStableID: podcastStableID.isEmpty ? nil : podcastStableID,
             stableID: episodeStableID,
             title: title,
-            summary: strippedSummary ?? summary,
+            summary: summary,
             audioURL: localAudioURL?.absoluteString ?? audioURL.absoluteString,
             imageURL: cachedImageFileURL?.absoluteString ?? imageURL?.absoluteString,
             publishedAt: publishedAt,

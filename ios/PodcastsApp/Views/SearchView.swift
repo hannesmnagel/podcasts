@@ -4,8 +4,21 @@ import UIKit
 final class SearchViewController: UITableViewController, UISearchResultsUpdating, UISearchBarDelegate {
     private enum Row {
         case podcast(PodcastDTO)
-        case episode(EpisodeDTO)
         case directory(PodcastDirectoryDTO)
+        case showMorePodcasts(Int)
+        case episode(EpisodeDTO)
+    }
+
+    private enum PodcastSearchResult {
+        case known(PodcastDTO)
+        case directory(PodcastDirectoryDTO)
+
+        var feedURL: String {
+            switch self {
+            case .known(let podcast): podcast.feedURL
+            case .directory(let podcast): podcast.feedURL
+            }
+        }
     }
 
     private let modelContext: ModelContext
@@ -18,7 +31,9 @@ final class SearchViewController: UITableViewController, UISearchResultsUpdating
     private var addingFeedURL: String?
     private var playedEpisodeIDs: Set<String> = []
     private var deletedEpisodeIDs: Set<String> = []
+    private var summarySnippets: [String: String] = [:]
     private var podcastsCollapsed = false
+    private var showAllPodcasts = false
 
     init(modelContext: ModelContext, player: PlayerController) {
         self.modelContext = modelContext
@@ -68,22 +83,21 @@ final class SearchViewController: UITableViewController, UISearchResultsUpdating
     }
 
     override func numberOfSections(in tableView: UITableView) -> Int {
-        3
+        2
     }
 
     override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
         switch section {
         case 0: nil
         case 1: visibleEpisodeSnapshot.isEmpty ? nil : "Episodes"
-        case 2: results.directory.isEmpty ? nil : "Apple Podcasts Directory"
         default: nil
         }
     }
 
     override func tableView(_ tableView: UITableView, viewForHeaderInSection section: Int) -> UIView? {
-        guard section == 0, !results.podcasts.isEmpty else { return nil }
+        guard section == 0, !podcastResults.isEmpty else { return nil }
         var configuration = UIButton.Configuration.plain()
-        configuration.title = "Known Podcasts"
+        configuration.title = "Podcasts"
         configuration.image = UIImage(systemName: podcastsCollapsed ? "chevron.right" : "chevron.down")
         configuration.imagePlacement = .leading
         configuration.baseForegroundColor = .secondaryLabel
@@ -95,14 +109,13 @@ final class SearchViewController: UITableViewController, UISearchResultsUpdating
     }
 
     override func tableView(_ tableView: UITableView, heightForHeaderInSection section: Int) -> CGFloat {
-        section == 0 && !results.podcasts.isEmpty ? 40 : UITableView.automaticDimension
+        section == 0 && !podcastResults.isEmpty ? 40 : UITableView.automaticDimension
     }
 
     override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
         switch section {
-        case 0: podcastsCollapsed ? 0 : results.podcasts.count
+        case 0: podcastsCollapsed ? 0 : visiblePodcastRowCount
         case 1: visibleEpisodeSnapshot.count
-        case 2: results.directory.count
         default: 0
         }
     }
@@ -110,28 +123,50 @@ final class SearchViewController: UITableViewController, UISearchResultsUpdating
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         switch indexPath.section {
         case 0:
-            let podcast = results.podcasts[indexPath.row]
-            let cell = tableView.dequeueReusableCell(withIdentifier: SearchPodcastCell.reuseIdentifier, for: indexPath) as! SearchPodcastCell
-            cell.configure(title: podcast.title.isEmpty ? podcast.feedURL : podcast.title, subtitle: podcast.feedURL, artworkURL: podcast.imageURL.flatMap(URL.init(string:)), isSubscribed: isSubscribed(to: podcast.stableID), isAdding: addingFeedURL == podcast.feedURL)
-            cell.addTapped = { [weak self] in Task { await self?.addKnownPodcast(podcast) } }
-            return cell
+            if indexPath.row == visiblePodcastResults.count, podcastResults.count > visiblePodcastResults.count {
+                let cell = UITableViewCell(style: .default, reuseIdentifier: nil)
+                var configuration = UIListContentConfiguration.cell()
+                configuration.text = "Show \(podcastResults.count - visiblePodcastResults.count) More Podcasts"
+                configuration.image = UIImage(systemName: "chevron.down.circle")
+                configuration.textProperties.color = .systemOrange
+                cell.contentConfiguration = configuration
+                return cell
+            }
+
+            let result = visiblePodcastResults[indexPath.row]
+            switch result {
+            case .known(let podcast):
+                let cell = tableView.dequeueReusableCell(withIdentifier: SearchPodcastCell.reuseIdentifier, for: indexPath) as! SearchPodcastCell
+                cell.configure(title: podcast.title.isEmpty ? podcast.feedURL : podcast.title, subtitle: podcast.feedURL, artworkURL: podcast.imageURL.flatMap(URL.init(string:)), isSubscribed: isSubscribed(to: podcast.stableID), isAdding: addingFeedURL == podcast.feedURL)
+                cell.addTapped = { [weak self] in Task { await self?.addKnownPodcast(podcast) } }
+                return cell
+            case .directory(let podcast):
+                let cell = tableView.dequeueReusableCell(withIdentifier: SearchPodcastCell.reuseIdentifier, for: indexPath) as! SearchPodcastCell
+                cell.configure(title: podcast.title, subtitle: podcast.artistName ?? podcast.feedURL, artworkURL: podcast.artworkURL.flatMap(URL.init(string:)), isSubscribed: subscriptions.contains { $0.feedURL.absoluteString == podcast.feedURL }, isAdding: addingFeedURL == podcast.feedURL)
+                cell.addTapped = { [weak self] in Task { await self?.addDirectoryPodcast(podcast) } }
+                return cell
+            }
         case 1:
             let episode = visibleEpisodeSnapshot[indexPath.row]
             let cell = tableView.dequeueReusableCell(withIdentifier: EpisodeCell.reuseIdentifier, for: indexPath) as! EpisodeCell
-            cell.configure(episode: episode, artworkURL: LibraryStore.localArtworkURL(for: episode, in: modelContext), isPlayed: playedEpisodeIDs.contains(episode.stableID), dimsPlayed: false, player: player)
+            cell.configure(episode: episode, summaryText: summarySnippets[episode.stableID] ?? episode.summary, artworkURL: LibraryStore.localArtworkURL(for: episode, in: modelContext), isPlayed: playedEpisodeIDs.contains(episode.stableID), dimsPlayed: false, player: player)
             cell.playTapped = { [weak self] in self?.play(episode) }
             return cell
         default:
-            let podcast = results.directory[indexPath.row]
-            let cell = tableView.dequeueReusableCell(withIdentifier: SearchPodcastCell.reuseIdentifier, for: indexPath) as! SearchPodcastCell
-            cell.configure(title: podcast.title, subtitle: podcast.artistName ?? podcast.feedURL, artworkURL: podcast.artworkURL.flatMap(URL.init(string:)), isSubscribed: subscriptions.contains { $0.feedURL.absoluteString == podcast.feedURL }, isAdding: addingFeedURL == podcast.feedURL)
-            cell.addTapped = { [weak self] in Task { await self?.addDirectoryPodcast(podcast) } }
-            return cell
+            return UITableViewCell()
         }
     }
 
     override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
+        if indexPath.section == 0,
+           indexPath.row == visiblePodcastResults.count,
+           podcastResults.count > visiblePodcastResults.count {
+            showAllPodcasts = true
+            tableView.reloadSections(IndexSet(integer: 0), with: .automatic)
+            return
+        }
+
         guard indexPath.section == 1 else { return }
         let episode = visibleEpisodeSnapshot[indexPath.row]
         navigationController?.pushViewController(EpisodeDetailViewController(episode: episode, modelContext: modelContext, player: player), animated: true)
@@ -142,6 +177,7 @@ final class SearchViewController: UITableViewController, UISearchResultsUpdating
         if let url = rssFeedURL(from: trimmed) {
             await addFeedURL(url)
         } else {
+            showAllPodcasts = false
             await search(trimmed)
         }
     }
@@ -180,7 +216,7 @@ final class SearchViewController: UITableViewController, UISearchResultsUpdating
             tableView.reloadData()
         }
         do {
-            let podcast = try await client.addPodcast(feedURL: url)
+            let podcast = await client.hydratedPodcast(afterAdding: try await client.addPodcast(feedURL: url))
             LibraryStore.subscribe(to: podcast, in: modelContext)
             query = ""
             results = EpisodeSearchDTO()
@@ -195,7 +231,7 @@ final class SearchViewController: UITableViewController, UISearchResultsUpdating
     private func addKnownPodcast(_ podcast: PodcastDTO) async {
         addingFeedURL = podcast.feedURL
         tableView.reloadData()
-        LibraryStore.subscribe(to: podcast, in: modelContext)
+        LibraryStore.subscribe(to: await client.hydratedPodcast(afterAdding: podcast), in: modelContext)
         loadSubscriptions()
         addingFeedURL = nil
         tableView.reloadData()
@@ -210,7 +246,7 @@ final class SearchViewController: UITableViewController, UISearchResultsUpdating
             tableView.reloadData()
         }
         do {
-            let addedPodcast = try await client.addPodcast(feedURL: url)
+            let addedPodcast = await client.hydratedPodcast(afterAdding: try await client.addPodcast(feedURL: url))
             LibraryStore.subscribe(to: addedPodcast, in: modelContext)
             loadSubscriptions()
             await search(query.trimmingCharacters(in: .whitespacesAndNewlines))
@@ -221,7 +257,7 @@ final class SearchViewController: UITableViewController, UISearchResultsUpdating
 
     private func updateRows() {
         tableView.reloadData()
-        if results.podcasts.isEmpty && visibleEpisodeSnapshot.isEmpty && results.directory.isEmpty {
+        if podcastResults.isEmpty && visibleEpisodeSnapshot.isEmpty {
             tableView.backgroundView = makeEmptyState()
         } else {
             tableView.backgroundView = nil
@@ -229,34 +265,41 @@ final class SearchViewController: UITableViewController, UISearchResultsUpdating
     }
 
     private func makeEmptyState() -> UIView {
+        let container = UIView()
         let titleLabel = UILabel()
-        titleLabel.text = query.isEmpty ? "Find Podcasts" : "No Results"
-        titleLabel.font = .preferredFont(forTextStyle: .title2)
+        titleLabel.text = query.isEmpty ? "Search Your Next Show" : "Nothing Found"
+        titleLabel.font = .preferredFont(forTextStyle: .title1)
         titleLabel.textAlignment = .center
 
         let detailLabel = UILabel()
-        detailLabel.text = query.isEmpty ? "Search podcasts, paste an RSS feed, or add shows from Apple Podcasts." : "Try a show name, host, topic, or RSS feed URL."
+        detailLabel.text = query.isEmpty ? "Type a podcast name, topic, host, episode title, or paste an RSS feed URL." : "Try a broader podcast name, a host, a topic, or paste the feed URL directly."
         detailLabel.font = .preferredFont(forTextStyle: .body)
         detailLabel.textColor = .secondaryLabel
         detailLabel.textAlignment = .center
         detailLabel.numberOfLines = 0
 
-        let icon = UIImageView(image: UIImage(systemName: "magnifyingglass.circle.fill"))
+        let iconName = query.isEmpty ? "waveform.and.magnifyingglass" : "text.magnifyingglass"
+        let icon = UIImageView(image: UIImage(systemName: iconName))
         icon.tintColor = .systemOrange
         icon.contentMode = .scaleAspectFit
         icon.translatesAutoresizingMaskIntoConstraints = false
 
         let stack = UIStackView(arrangedSubviews: [icon, titleLabel, detailLabel])
+        stack.translatesAutoresizingMaskIntoConstraints = false
         stack.axis = .vertical
         stack.alignment = .center
         stack.spacing = 12
         stack.layoutMargins = UIEdgeInsets(top: 0, left: 32, bottom: 0, right: 32)
         stack.isLayoutMarginsRelativeArrangement = true
+        container.addSubview(stack)
         NSLayoutConstraint.activate([
             icon.widthAnchor.constraint(equalToConstant: 64),
-            icon.heightAnchor.constraint(equalToConstant: 64)
+            icon.heightAnchor.constraint(equalToConstant: 64),
+            stack.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 20),
+            stack.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -20),
+            stack.centerYAnchor.constraint(equalTo: container.centerYAnchor, constant: -40)
         ])
-        return stack
+        return container
     }
 
     @objc private func togglePodcastsCollapsed() {
@@ -269,8 +312,10 @@ final class SearchViewController: UITableViewController, UISearchResultsUpdating
     }
 
     private func refreshEpisodeStateSets() {
-        playedEpisodeIDs = LibraryStore.playedEpisodeIDs(for: results.episodes, in: modelContext)
-        deletedEpisodeIDs = LibraryStore.deletedEpisodeIDs(for: results.episodes, in: modelContext)
+        let sets = LibraryStore.episodeIDSets(for: results.episodes, in: modelContext)
+        playedEpisodeIDs = sets.played
+        deletedEpisodeIDs = sets.deleted
+        summarySnippets = LibraryStore.summarySnippets(for: results.episodes, in: modelContext)
     }
 
     private func refreshVisibleEpisodeSnapshot() {
@@ -279,6 +324,28 @@ final class SearchViewController: UITableViewController, UISearchResultsUpdating
 
     private func isSubscribed(to stableID: String) -> Bool {
         subscriptions.contains { $0.stableID == stableID }
+    }
+
+    private var podcastResults: [PodcastSearchResult] {
+        var seenFeedURLs: Set<String> = []
+        var output: [PodcastSearchResult] = []
+        for podcast in results.podcasts {
+            guard seenFeedURLs.insert(podcast.feedURL).inserted else { continue }
+            output.append(.known(podcast))
+        }
+        for podcast in results.directory {
+            guard seenFeedURLs.insert(podcast.feedURL).inserted else { continue }
+            output.append(.directory(podcast))
+        }
+        return output
+    }
+
+    private var visiblePodcastResults: [PodcastSearchResult] {
+        showAllPodcasts ? podcastResults : Array(podcastResults.prefix(5))
+    }
+
+    private var visiblePodcastRowCount: Int {
+        visiblePodcastResults.count + (podcastResults.count > visiblePodcastResults.count ? 1 : 0)
     }
 
     private func play(_ episode: EpisodeDTO) {

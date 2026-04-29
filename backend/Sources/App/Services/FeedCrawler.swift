@@ -21,14 +21,24 @@ struct FeedCrawler: Sendable {
         switch parsed {
         case .rss(let rss):
             freshPodcast.title = rss.title ?? freshPodcast.title
-            freshPodcast.description = rss.description
-            freshPodcast.imageURL = rss.image?.url ?? rss.iTunes?.iTunesImage?.attributes?.href
+            freshPodcast.description = firstNonEmpty(
+                rss.iTunes?.iTunesSummary,
+                rss.description,
+                rss.iTunes?.iTunesSubtitle,
+                freshPodcast.description
+            )
+            freshPodcast.imageURL = firstNonEmpty(
+                rss.iTunes?.iTunesImage?.attributes?.href,
+                rss.image?.url,
+                freshPodcast.imageURL
+            )
             freshPodcast.lastCrawledAt = Date()
             try await freshPodcast.save(on: app.db)
             try await upsertRSSItems(rss.items ?? [], podcast: freshPodcast, on: app)
         case .atom(let atom):
             freshPodcast.title = atom.title ?? freshPodcast.title
-            freshPodcast.description = atom.subtitle?.value
+            freshPodcast.description = firstNonEmpty(atom.subtitle?.value, freshPodcast.description)
+            freshPodcast.imageURL = firstNonEmpty(atom.logo, atom.icon, freshPodcast.imageURL)
             freshPodcast.lastCrawledAt = Date()
             try await freshPodcast.save(on: app.db)
             try await upsertAtomEntries(atom.entries ?? [], podcast: freshPodcast, on: app)
@@ -55,7 +65,12 @@ struct FeedCrawler: Sendable {
             let stableID = StableID.episodeID(podcastID: podcast.stableID, guid: guid, audioURL: audioURL, title: title, publishedAt: item.pubDate)
             let episode = try await Episode.query(on: app.db).filter(\.$stableID == stableID).first() ?? Episode(podcastID: podcastUUID, stableID: stableID, guid: guid, title: title, audioURL: audioURL)
             episode.title = title
-            episode.summary = item.description ?? item.iTunes?.iTunesSubtitle
+            episode.summary = firstNonEmpty(
+                item.content?.contentEncoded,
+                item.iTunes?.iTunesSummary,
+                item.description,
+                item.iTunes?.iTunesSubtitle
+            )
             episode.audioURL = audioURL
             episode.imageURL = item.iTunes?.iTunesImage?.attributes?.href
             episode.publishedAt = item.pubDate
@@ -78,5 +93,11 @@ struct FeedCrawler: Sendable {
             episode.publishedAt = entry.published
             try await episode.save(on: app.db)
         }
+    }
+
+    private func firstNonEmpty(_ values: String?...) -> String? {
+        values
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first { !$0.isEmpty }
     }
 }

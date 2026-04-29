@@ -35,4 +35,8 @@ final class PodcastsSceneDelegate: UIResponder, UIWindowSceneDelegate {
         window.makeKeyAndVisible()
         self.window = window
     }
+
+    func sceneDidEnterBackground(_ scene: UIScene) {
+        (window?.rootViewController as? RootTabController)?.persistCurrentPlaybackState()
+    }
 }

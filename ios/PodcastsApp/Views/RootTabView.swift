@@ -26,9 +26,10 @@ final class RootTabController: UITabBarController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        tabBarMinimizeBehavior = .onScrollDown
         episodesController.tabBarItem = UITabBarItem(title: "Episodes", image: UIImage(systemName: "list.bullet"), tag: 0)
         podcastsController.tabBarItem = UITabBarItem(title: "Podcasts", image: UIImage(systemName: "square.stack"), tag: 1)
-        searchController.tabBarItem = UITabBarItem(title: "Search", image: UIImage(systemName: "magnifyingglass"), tag: 2)
+        searchController.tabBarItem = UITabBarItem(tabBarSystemItem: .search, tag: 2)
 
         viewControllers = [
             UINavigationController(rootViewController: episodesController),
@@ -36,27 +37,49 @@ final class RootTabController: UITabBarController {
             UINavigationController(rootViewController: searchController)
         ]
         configureMiniPlayer()
+        restorePlaybackState()
+        observePlaybackPersistence()
     }
 
     private func configureMiniPlayer() {
         miniPlayer.openNowPlaying = { [weak self] in self?.presentNowPlaying() }
         player.$currentEpisode.receive(on: DispatchQueue.main).sink { [weak self] episode in
-            NSLog("[PodcastsDebug][RootTab] currentEpisode changed visible=%@", episode == nil ? "false" : "true")
             self?.setMiniPlayerVisible(episode != nil)
         }.store(in: &cancellables)
     }
 
+    private func restorePlaybackState() {
+        guard player.currentEpisode == nil,
+              let episode = LibraryStore.lastPlaybackEpisode(in: modelContext) else {
+            return
+        }
+        let position = LibraryStore.playbackPosition(for: episode, in: modelContext)
+        player.restore(episode, at: position, artworkURL: LibraryStore.localArtworkURL(for: episode, in: modelContext))
+    }
+
+    private func observePlaybackPersistence() {
+        player.$elapsed
+            .combineLatest(player.$duration, player.$currentEpisode)
+            .throttle(for: .seconds(5), scheduler: DispatchQueue.main, latest: true)
+            .sink { [weak self] elapsed, duration, episode in
+                guard let self, let episode else { return }
+                LibraryStore.updatePlaybackState(episode: episode, elapsed: elapsed, duration: duration, in: self.modelContext)
+            }
+            .store(in: &cancellables)
+    }
+
+    func persistCurrentPlaybackState() {
+        guard let episode = player.currentEpisode else { return }
+        LibraryStore.updatePlaybackState(episode: episode, elapsed: player.elapsed, duration: player.duration, in: modelContext)
+    }
+
     private func setMiniPlayerVisible(_ isVisible: Bool) {
-        NSLog("[PodcastsDebug][RootTab] setMiniPlayerVisible %@", isVisible ? "true" : "false")
         if isVisible {
             if miniPlayerAccessory == nil {
-                NSLog("[PodcastsDebug][RootTab] creating UITabAccessory")
                 miniPlayerAccessory = UITabAccessory(contentView: miniPlayer)
             }
-            NSLog("[PodcastsDebug][RootTab] installing UITabAccessory")
             setBottomAccessory(miniPlayerAccessory, animated: false)
         } else {
-            NSLog("[PodcastsDebug][RootTab] removing UITabAccessory")
             setBottomAccessory(nil, animated: false)
         }
     }

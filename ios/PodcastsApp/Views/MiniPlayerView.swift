@@ -10,7 +10,6 @@ final class MiniPlayerView: UIControl {
     private let artworkView = ArtworkImageView(cornerRadius: 8)
     private let titleLabel = UILabel()
     private let playButton = UIButton(type: .system)
-    private let chevronView = UIImageView(image: UIImage(systemName: "chevron.up"))
 
     var openNowPlaying: (() -> Void)?
 
@@ -42,9 +41,8 @@ final class MiniPlayerView: UIControl {
 
         playButton.tintColor = .systemOrange
         playButton.addTarget(self, action: #selector(togglePlayback), for: .touchUpInside)
-        chevronView.tintColor = .secondaryLabel
 
-        [artworkView, titleLabel, playButton, chevronView].forEach {
+        [artworkView, titleLabel, playButton].forEach {
             $0.translatesAutoresizingMaskIntoConstraints = true
             addSubview($0)
         }
@@ -59,7 +57,6 @@ final class MiniPlayerView: UIControl {
 
         let artworkSide = min(44, bounds.height)
         let controlSide = min(44, bounds.height)
-        let chevronSide: CGFloat = 18
         let spacing: CGFloat = 12
         let centerY = bounds.midY
 
@@ -69,14 +66,8 @@ final class MiniPlayerView: UIControl {
             width: artworkSide,
             height: artworkSide
         )
-        chevronView.frame = CGRect(
-            x: bounds.maxX - chevronSide,
-            y: centerY - chevronSide / 2,
-            width: chevronSide,
-            height: chevronSide
-        )
         playButton.frame = CGRect(
-            x: chevronView.frame.minX - spacing - controlSide,
+            x: bounds.maxX - controlSide,
             y: centerY - controlSide / 2,
             width: controlSide,
             height: controlSide
@@ -103,7 +94,6 @@ final class MiniPlayerView: UIControl {
         guard let episode = player.currentEpisode else {
             return
         }
-        NSLog("[PodcastsDebug][MiniPlayer] update episode=%@", episode.stableID)
         titleLabel.text = episode.title
         artworkView.load(url: LibraryStore.localArtworkURL(for: episode, in: modelContext))
         let image = UIImage(systemName: player.isPlaying ? "pause.fill" : "play.fill")

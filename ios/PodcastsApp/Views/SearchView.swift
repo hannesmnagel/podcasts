@@ -18,6 +18,7 @@ final class SearchViewController: UITableViewController, UISearchResultsUpdating
     private var addingFeedURL: String?
     private var playedEpisodeIDs: Set<String> = []
     private var deletedEpisodeIDs: Set<String> = []
+    private var podcastsCollapsed = false
 
     init(modelContext: ModelContext, player: PlayerController) {
         self.modelContext = modelContext
@@ -72,16 +73,34 @@ final class SearchViewController: UITableViewController, UISearchResultsUpdating
 
     override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
         switch section {
-        case 0: results.podcasts.isEmpty ? nil : "Known Podcasts"
+        case 0: nil
         case 1: visibleEpisodeSnapshot.isEmpty ? nil : "Episodes"
         case 2: results.directory.isEmpty ? nil : "Apple Podcasts Directory"
         default: nil
         }
     }
 
+    override func tableView(_ tableView: UITableView, viewForHeaderInSection section: Int) -> UIView? {
+        guard section == 0, !results.podcasts.isEmpty else { return nil }
+        var configuration = UIButton.Configuration.plain()
+        configuration.title = "Known Podcasts"
+        configuration.image = UIImage(systemName: podcastsCollapsed ? "chevron.right" : "chevron.down")
+        configuration.imagePlacement = .leading
+        configuration.baseForegroundColor = .secondaryLabel
+        let button = UIButton(type: .system)
+        button.configuration = configuration
+        button.contentHorizontalAlignment = .leading
+        button.addTarget(self, action: #selector(togglePodcastsCollapsed), for: .touchUpInside)
+        return button
+    }
+
+    override func tableView(_ tableView: UITableView, heightForHeaderInSection section: Int) -> CGFloat {
+        section == 0 && !results.podcasts.isEmpty ? 40 : UITableView.automaticDimension
+    }
+
     override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
         switch section {
-        case 0: results.podcasts.count
+        case 0: podcastsCollapsed ? 0 : results.podcasts.count
         case 1: visibleEpisodeSnapshot.count
         case 2: results.directory.count
         default: 0
@@ -140,7 +159,6 @@ final class SearchViewController: UITableViewController, UISearchResultsUpdating
         do {
             let searchResults = try await client.search(trimmed)
             await LibraryStore.cacheEpisodes(searchResults.episodes, in: modelContext)
-            Task { await LibraryStore.prefetchDetails(for: searchResults.episodes, client: client, in: modelContext) }
             results = EpisodeSearchDTO(
                 podcasts: searchResults.podcasts,
                 episodes: LibraryStore.localEpisodes(matching: trimmed, in: modelContext),
@@ -203,17 +221,47 @@ final class SearchViewController: UITableViewController, UISearchResultsUpdating
 
     private func updateRows() {
         tableView.reloadData()
-        let empty = query.isEmpty ? "Search\nSearch the shared podcast catalog and Apple Podcasts." : "No Results"
         if results.podcasts.isEmpty && visibleEpisodeSnapshot.isEmpty && results.directory.isEmpty {
-            let label = UILabel()
-            label.text = empty
-            label.textAlignment = .center
-            label.textColor = .secondaryLabel
-            label.numberOfLines = 0
-            tableView.backgroundView = label
+            tableView.backgroundView = makeEmptyState()
         } else {
             tableView.backgroundView = nil
         }
+    }
+
+    private func makeEmptyState() -> UIView {
+        let titleLabel = UILabel()
+        titleLabel.text = query.isEmpty ? "Find Podcasts" : "No Results"
+        titleLabel.font = .preferredFont(forTextStyle: .title2)
+        titleLabel.textAlignment = .center
+
+        let detailLabel = UILabel()
+        detailLabel.text = query.isEmpty ? "Search podcasts, paste an RSS feed, or add shows from Apple Podcasts." : "Try a show name, host, topic, or RSS feed URL."
+        detailLabel.font = .preferredFont(forTextStyle: .body)
+        detailLabel.textColor = .secondaryLabel
+        detailLabel.textAlignment = .center
+        detailLabel.numberOfLines = 0
+
+        let icon = UIImageView(image: UIImage(systemName: "magnifyingglass.circle.fill"))
+        icon.tintColor = .systemOrange
+        icon.contentMode = .scaleAspectFit
+        icon.translatesAutoresizingMaskIntoConstraints = false
+
+        let stack = UIStackView(arrangedSubviews: [icon, titleLabel, detailLabel])
+        stack.axis = .vertical
+        stack.alignment = .center
+        stack.spacing = 12
+        stack.layoutMargins = UIEdgeInsets(top: 0, left: 32, bottom: 0, right: 32)
+        stack.isLayoutMarginsRelativeArrangement = true
+        NSLayoutConstraint.activate([
+            icon.widthAnchor.constraint(equalToConstant: 64),
+            icon.heightAnchor.constraint(equalToConstant: 64)
+        ])
+        return stack
+    }
+
+    @objc private func togglePodcastsCollapsed() {
+        podcastsCollapsed.toggle()
+        tableView.reloadSections(IndexSet(integer: 0), with: .automatic)
     }
 
     private func loadSubscriptions() {
@@ -237,7 +285,7 @@ final class SearchViewController: UITableViewController, UISearchResultsUpdating
         if player.currentEpisode?.stableID == episode.stableID {
             player.togglePlayPause()
         } else {
-            player.play(episode, artworkURL: LibraryStore.localArtworkURL(for: episode, in: modelContext))
+            player.play(episode, at: LibraryStore.playbackPosition(for: episode, in: modelContext), artworkURL: LibraryStore.localArtworkURL(for: episode, in: modelContext))
         }
     }
 

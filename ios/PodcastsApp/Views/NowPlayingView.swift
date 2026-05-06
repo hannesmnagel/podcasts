@@ -730,6 +730,10 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
         guard let episode = player.currentEpisode else { return }
         if let transcript = try? await client.transcript(for: episode.stableID) {
             await LibraryStore.cacheTranscript(transcript, for: episode, in: modelContext)
+            if let fingerprint = try? await client.fingerprint(for: episode.stableID) {
+                LibraryStore.cacheFingerprint(fingerprint, for: episode, in: modelContext)
+                await LibraryStore.alignTranscriptToDownloadedAudio(for: episode, in: modelContext)
+            }
             transcriptText = LibraryStore.cachedTranscriptText(for: episode, in: modelContext)
             transcriptSegments = LibraryStore.cachedTranscriptSegments(for: episode, in: modelContext)
         }

@@ -24,6 +24,7 @@ public func configure(_ app: Application) async throws {
     app.migrations.add(CreateArtifactRequest())
     app.migrations.add(CreatePodcastDemand())
     app.migrations.add(CreateTranscriptArtifact())
+    app.migrations.add(CreateFingerprintArtifact())
     app.migrations.add(CreateChapterArtifact())
     app.migrations.add(CreateWorkerJob())
 

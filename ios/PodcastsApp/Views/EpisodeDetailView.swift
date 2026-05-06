@@ -301,6 +301,10 @@ final class EpisodeDetailViewController: UIViewController {
             do {
                 let artifact = try await client.transcript(for: episode.stableID)
                 await LibraryStore.cacheTranscript(artifact, for: episode, in: modelContext)
+                if let fingerprint = try? await client.fingerprint(for: episode.stableID) {
+                    LibraryStore.cacheFingerprint(fingerprint, for: episode, in: modelContext)
+                    await LibraryStore.alignTranscriptToDownloadedAudio(for: episode, in: modelContext)
+                }
                 transcriptText = LibraryStore.cachedTranscriptText(for: episode, in: modelContext)
             } catch BackendError.notFound {
                 transcriptText = LibraryStore.cachedTranscriptText(for: episode, in: modelContext)
@@ -368,6 +372,7 @@ final class EpisodeDetailViewController: UIViewController {
             updateActionHeader()
             Task {
                 await LibraryStore.downloadAudio(for: episode, in: modelContext)
+                await LibraryStore.alignTranscriptToDownloadedAudio(for: episode, in: modelContext)
                 isDownloading = false
                 updateActionHeader()
             }

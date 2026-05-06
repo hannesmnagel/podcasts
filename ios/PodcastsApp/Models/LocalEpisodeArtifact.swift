@@ -9,6 +9,12 @@ final class LocalEpisodeArtifact {
     var transcriptLocale: String?
     var transcriptModel: String?
     var transcriptTextHash: String?
+    var transcriptRenditionID: String?
+    var alignedTranscriptSegmentsJSON: String?
+    var alignmentSourceAudioHash: String?
+    var fingerprintAlgorithm: String?
+    var fingerprintChunksJSON: String?
+    var fingerprintAudioHash: String?
     var chaptersJSON: String?
     var chaptersSource: String?
     var chapterImageFilesJSON: Data?

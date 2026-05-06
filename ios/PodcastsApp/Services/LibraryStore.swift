@@ -351,7 +351,8 @@ enum LibraryStore {
     }
 
     static func cachedTranscriptSegments(for episode: EpisodeDTO, in context: ModelContext) -> [TranscriptSegment] {
-        guard let segmentsJSON = artifact(for: episode, in: context)?.transcriptSegmentsJSON else { return [] }
+        guard let artifact = artifact(for: episode, in: context),
+              let segmentsJSON = artifact.alignedTranscriptSegmentsJSON ?? artifact.transcriptSegmentsJSON else { return [] }
         return TranscriptRenderer.segments(from: segmentsJSON)
     }
 
@@ -387,7 +388,51 @@ enum LibraryStore {
         artifact.transcriptLocale = transcript.locale
         artifact.transcriptModel = transcript.model
         artifact.transcriptTextHash = transcript.textHash
+        artifact.transcriptRenditionID = transcript.renditionID
+        artifact.alignedTranscriptSegmentsJSON = nil
+        artifact.alignmentSourceAudioHash = nil
         artifact.updatedAt = .now
+    }
+
+    static func cacheFingerprint(_ fingerprint: AudioFingerprintDTO, for episode: EpisodeDTO, in context: ModelContext) {
+        let artifact = artifact(for: episode, in: context) ?? makeArtifact(for: episode, in: context)
+        artifact.fingerprintAlgorithm = fingerprint.algorithm
+        artifact.fingerprintChunksJSON = fingerprint.chunksJSON
+        artifact.fingerprintAudioHash = fingerprint.audioHash
+        artifact.updatedAt = .now
+    }
+
+    static func alignTranscriptToDownloadedAudio(for episode: EpisodeDTO, in context: ModelContext) async {
+        guard let artifact = artifact(for: episode, in: context),
+              let transcriptSegmentsJSON = artifact.transcriptSegmentsJSON,
+              let fingerprintAlgorithm = artifact.fingerprintAlgorithm,
+              let fingerprintChunksJSON = artifact.fingerprintChunksJSON,
+              let localURL = episodeState(for: episode, in: context)?.downloadedFileURL,
+              FileManager.default.fileExists(atPath: localURL.path) else {
+            return
+        }
+        do {
+            let localFingerprint = try await AudioFingerprintMaker.fingerprint(audioFile: localURL)
+            if artifact.alignmentSourceAudioHash == localFingerprint.audioHash,
+               artifact.alignedTranscriptSegmentsJSON != nil {
+                return
+            }
+            let backendFingerprint = AudioFingerprintDTO(
+                id: nil,
+                renditionID: artifact.transcriptRenditionID,
+                algorithm: fingerprintAlgorithm,
+                chunkDuration: AudioFingerprintMaker.chunkDuration,
+                chunksJSON: fingerprintChunksJSON,
+                audioHash: artifact.fingerprintAudioHash
+            )
+            if let aligned = TranscriptAligner.alignedSegmentsJSON(transcriptSegmentsJSON: transcriptSegmentsJSON, backendFingerprint: backendFingerprint, localFingerprint: localFingerprint) {
+                artifact.alignedTranscriptSegmentsJSON = aligned
+                artifact.alignmentSourceAudioHash = localFingerprint.audioHash
+                artifact.updatedAt = .now
+            }
+        } catch {
+            // Alignment is best-effort; fall back to backend timestamps.
+        }
     }
 
     static func cacheChapters(_ chapters: ChapterArtifactDTO, for episode: EpisodeDTO, in context: ModelContext) {
@@ -458,6 +503,10 @@ enum LibraryStore {
         if existing?.transcriptSegmentsJSON == nil,
            let transcript = try? await client.transcript(for: episode.stableID) {
             await cacheTranscript(transcript, for: episode, in: context)
+        }
+        if let fingerprint = try? await client.fingerprint(for: episode.stableID) {
+            cacheFingerprint(fingerprint, for: episode, in: context)
+            await alignTranscriptToDownloadedAudio(for: episode, in: context)
         }
 
         let artifact = artifact(for: episode, in: context) ?? makeArtifact(for: episode, in: context)

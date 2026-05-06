@@ -11,7 +11,7 @@ final class PlayerController: ObservableObject {
     @Published private(set) var isPlaying = false
     @Published private(set) var elapsed: TimeInterval = 0
     @Published private(set) var duration: TimeInterval?
-    @Published var speed: Float = 3.0 {
+    @Published var speed: Float = Float(PlaybackSettings.globalSpeed) {
         didSet {
             let clamped = Float(PlaybackSettings.clampedSpeed(Double(speed)))
             if speed != clamped {
@@ -53,7 +53,7 @@ final class PlayerController: ObservableObject {
         }
         debug("play requested id=\(episode.stableID) speed=\(effectiveSpeed) url=\(url.absoluteString)")
         let item = AVPlayerItem(url: url)
-        item.audioTimePitchAlgorithm = .spectral
+        item.audioTimePitchAlgorithm = pitchAlgorithm(for: effectiveSpeed)
         observeItem(item, episode: episode, startTime: startTime)
         player.replaceCurrentItem(with: item)
         elapsed = max(0, startTime)
@@ -113,6 +113,7 @@ final class PlayerController: ObservableObject {
     }
 
     private func applyRate() {
+        player.currentItem?.audioTimePitchAlgorithm = pitchAlgorithm(for: effectiveSpeed)
         guard player.timeControlStatus == .playing else { return }
         player.rate = effectiveSpeed
         updateNowPlayingPlaybackState()
@@ -120,6 +121,12 @@ final class PlayerController: ObservableObject {
 
     private var effectiveSpeed: Float {
         Float(PlaybackSettings.clampedSpeed(Double(speed)))
+    }
+
+    private func pitchAlgorithm(for speed: Float) -> AVAudioTimePitchAlgorithm {
+        // Spectral pitch preservation gets metallic on some podcast files at very high speeds.
+        // Time-domain is less artifact-prone for fast spoken-word playback.
+        speed > 2.2 ? .timeDomain : .spectral
     }
 
     private func observePlaybackTime() {

@@ -13,8 +13,10 @@ struct WorkerConfig {
     var whisperCommand = ProcessInfo.processInfo.environment["PODCAST_WHISPER_COMMAND"] ?? "whisper"
     var whisperModel = ProcessInfo.processInfo.environment["PODCAST_WHISPER_MODEL"] ?? ""
     var ollamaURL = URL(string: ProcessInfo.processInfo.environment["PODCAST_OLLAMA_URL"] ?? "http://localhost:11434")!
-    var ollamaModel = ProcessInfo.processInfo.environment["PODCAST_OLLAMA_MODEL"] ?? "llama3.1:8b"
-    var minimumChapterSpacing = TimeInterval(ProcessInfo.processInfo.environment["PODCAST_CHAPTER_MIN_SECONDS"] ?? "180") ?? 180
+    var ollamaModel = ProcessInfo.processInfo.environment["PODCAST_OLLAMA_MODEL"] ?? "gemma3:12b"
+    var ollamaContextWindow = Int(ProcessInfo.processInfo.environment["PODCAST_OLLAMA_CONTEXT"] ?? "65536") ?? 65_536
+    var logRawOllamaResponses = ProcessInfo.processInfo.environment["PODCAST_CHAPTER_LOG_RAW"] == "true"
+    var minimumChapterSpacing = TimeInterval(ProcessInfo.processInfo.environment["PODCAST_CHAPTER_MIN_SECONDS"] ?? "90") ?? 90
     var maximumChapters = Int(ProcessInfo.processInfo.environment["PODCAST_CHAPTER_MAX_COUNT"] ?? "24") ?? 24
 }
 
@@ -84,8 +86,7 @@ struct JobProcessor {
                 let transcript = try await makeTranscript(for: job.episode)
                 try await client.uploadTranscript(transcript, episodeID: job.episode.stableID)
             case "chapters":
-                let chapters = try await makeChapters(for: job.episode)
-                try await client.uploadChapters(chapters, episodeID: job.episode.stableID)
+                throw WorkerError.chapterizationDisabled
             default:
                 throw WorkerError.unsupportedJobKind(job.kind)
             }
@@ -104,17 +105,26 @@ struct JobProcessor {
         let sizeMB = (try? audioFile.resourceValues(forKeys: [.fileSizeKey]).fileSize)
             .flatMap { Double($0) / 1_048_576 }
         let sizeStr = sizeMB.map { String(format: "%.1f MB", $0) } ?? "unknown size"
-        print("  audio downloaded (\(sizeStr)), running Whisper…")
+        print("  audio downloaded (\(sizeStr)), fingerprinting rendition…")
+        let fingerprint = try? await AudioFingerprintMaker.fingerprint(audioFile: audioFile)
+        if let fingerprint {
+            let chunkCount = (try? JSONDecoder().decode([AudioFingerprintChunk].self, from: Data(fingerprint.chunksJSON.utf8)).count) ?? 0
+            print("  fingerprint complete — \(chunkCount) chunks")
+        } else {
+            print("  fingerprint failed; continuing with transcript only")
+        }
+        print("  running Whisper…")
 
         if let whisper = try? await WhisperRunner(command: config.whisperCommand, model: config.whisperModel).transcribe(audioFile: audioFile) {
             print("  transcription complete — language: \(whisper.language ?? "unknown"), \(whisper.segmentCount) segments")
             guard whisper.text.count >= 200 else { throw WorkerError.transcriptTooShort(whisper.text.count) }
             return TranscriptUploadDTO(
-                renditionID: nil,
+                renditionID: fingerprint?.renditionID,
                 locale: whisper.language ?? "unknown",
                 model: whisper.model,
                 segmentsJSON: whisper.segmentsJSON,
-                textHash: whisper.text.stableHash
+                textHash: whisper.text.stableHash,
+                fingerprint: fingerprint
             )
         }
 
@@ -122,7 +132,7 @@ struct JobProcessor {
         let segment = TranscriptSegment(start: 0, end: nil, text: "Transcript requested for \(episode.title). Local transcription is not configured yet.")
         let data = try JSONEncoder().encode([segment])
         let segmentsJSON = String(decoding: data, as: UTF8.self)
-        return TranscriptUploadDTO(renditionID: nil, locale: "unknown", model: "stub", segmentsJSON: segmentsJSON, textHash: segmentsJSON.stableHash)
+        return TranscriptUploadDTO(renditionID: fingerprint?.renditionID, locale: "unknown", model: "stub", segmentsJSON: segmentsJSON, textHash: segmentsJSON.stableHash, fingerprint: fingerprint)
     }
 
     private func makeChapters(for episode: EpisodeDTO) async throws -> ChaptersUploadDTO {
@@ -132,7 +142,9 @@ struct JobProcessor {
             baseURL: config.ollamaURL,
             model: config.ollamaModel,
             minimumSpacing: config.minimumChapterSpacing,
-            maximumChapters: config.maximumChapters
+            maximumChapters: config.maximumChapters,
+            contextWindow: config.ollamaContextWindow,
+            logRawResponses: config.logRawOllamaResponses
         ).chapters(for: episode, segments: segments)
         guard chapters.count > 1 else { throw WorkerError.chapterizationFailed }
         print("  chapterization complete — \(chapters.count) chapters")
@@ -316,6 +328,7 @@ struct EpisodeDTO: Codable, Identifiable {
     let podcastStableID: String?
     let stableID: String
     let title: String
+    let summary: String?
     let audioURL: String
     let duration: TimeInterval?
 }
@@ -326,6 +339,7 @@ struct TranscriptUploadDTO: Codable {
     let model: String
     let segmentsJSON: String
     let textHash: String
+    let fingerprint: AudioFingerprint?
 }
 
 struct ChaptersUploadDTO: Codable {
@@ -381,6 +395,7 @@ enum WorkerError: LocalizedError {
     case whisperOutputMissing
     case transcriptTooShort(Int)
     case transcriptSegmentsMissing
+    case chapterizationDisabled
     case chapterizationFailed
     case ollamaInvalidResponse(String)
 
@@ -396,6 +411,7 @@ enum WorkerError: LocalizedError {
         case .whisperOutputMissing: "Whisper did not produce a JSON output file"
         case let .transcriptTooShort(count): "Transcript too short (\(count) chars) — likely a transcription failure"
         case .transcriptSegmentsMissing: "Transcript did not contain decodable timed segments"
+        case .chapterizationDisabled: "Chapterization is disabled in the worker"
         case .chapterizationFailed: "Chapterization did not produce enough chapter boundaries"
         case let .ollamaInvalidResponse(reason): "Ollama did not return valid chapter JSON: \(reason)"
         }

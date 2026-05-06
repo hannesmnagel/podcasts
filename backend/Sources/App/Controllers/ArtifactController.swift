@@ -8,8 +8,10 @@ struct ArtifactController: RouteCollection {
         let episodes = routes.grouped("episodes", ":id")
         episodes.post("artifact-requests", use: requestArtifacts)
         episodes.get("transcript", use: transcript)
+        episodes.get("fingerprint", use: fingerprint)
         episodes.get("chapters", use: chapters)
         episodes.post("transcript", use: uploadTranscript)
+        episodes.post("fingerprint", use: uploadFingerprint)
         episodes.post("chapters", use: uploadChapters)
     }
 
@@ -28,8 +30,17 @@ struct ArtifactController: RouteCollection {
 
         let podcastDemand = try await incrementPodcastDemand(for: episode, input: input, on: req.db)
         let podcastPriorityBoost = podcastDemand.priorityScore
-        if input.transcript ?? true, !(try await artifactExists(episodeID: episodeID, kind: "transcript", on: req.db)) {
-            try await ensureWorkerJob(episodeID: episodeID, kind: "transcript", priority: demand.transcriptCount * 3 + podcastPriorityBoost, on: req.db)
+        // Fingerprints are currently produced as part of transcript jobs so both
+        // artifacts refer to the same worker-fetched rendition. If an old
+        // transcript exists without a fingerprint, queue a fresh transcript job.
+        let wantsTranscript = input.transcript ?? true
+        let wantsFingerprint = input.fingerprint ?? false
+        let hasTranscript = try await artifactExists(episodeID: episodeID, kind: "transcript", on: req.db)
+        let hasFingerprint = try await artifactExists(episodeID: episodeID, kind: "fingerprint", on: req.db)
+        let needsTranscript = wantsTranscript && !hasTranscript
+        let needsFingerprint = wantsFingerprint && !hasFingerprint
+        if needsTranscript || needsFingerprint {
+            try await ensureWorkerJob(episodeID: episodeID, kind: "transcript", priority: demand.transcriptCount * 3 + demand.fingerprintCount + podcastPriorityBoost, on: req.db)
         }
         if chaptersEnabled, input.chapters ?? true, !(try await artifactExists(episodeID: episodeID, kind: "chapters", on: req.db)) {
             try await ensureWorkerJob(episodeID: episodeID, kind: "chapters", priority: demand.chapterCount * 2 + podcastPriorityBoost, on: req.db)
@@ -75,6 +86,17 @@ struct ArtifactController: RouteCollection {
         return artifact
     }
 
+    func fingerprint(req: Request) async throws -> FingerprintArtifact {
+        let episode = try await findEpisode(req)
+        guard let artifact = try await FingerprintArtifact.query(on: req.db)
+            .filter(\.$episode.$id == episode.requireID())
+            .sort(\.$createdAt, .descending)
+            .first() else {
+            throw Abort(.notFound)
+        }
+        return artifact
+    }
+
     func chapters(req: Request) async throws -> ChapterArtifact {
         let episode = try await findEpisode(req)
         guard let artifact = try await ChapterArtifact.query(on: req.db)
@@ -97,6 +119,27 @@ struct ArtifactController: RouteCollection {
         artifact.segmentsJSON = input.segmentsJSON
         artifact.textHash = input.textHash
         try await artifact.save(on: req.db)
+        if let fingerprint = input.fingerprint {
+            _ = try await saveFingerprint(fingerprint, episodeID: episode.requireID(), on: req.db)
+        }
+        return artifact
+    }
+
+    func uploadFingerprint(req: Request) async throws -> FingerprintArtifact {
+        let episode = try await findEpisode(req)
+        let input = try req.content.decode(FingerprintUpload.self)
+        return try await saveFingerprint(input, episodeID: episode.requireID(), on: req.db)
+    }
+
+    private func saveFingerprint(_ input: FingerprintUpload, episodeID: UUID, on db: any Database) async throws -> FingerprintArtifact {
+        let artifact = FingerprintArtifact()
+        artifact.$episode.id = episodeID
+        artifact.renditionID = input.renditionID
+        artifact.algorithm = input.algorithm
+        artifact.chunkDuration = input.chunkDuration
+        artifact.chunksJSON = input.chunksJSON
+        artifact.audioHash = input.audioHash
+        try await artifact.save(on: db)
         return artifact
     }
 
@@ -112,10 +155,12 @@ struct ArtifactController: RouteCollection {
     }
 
     private func ensureWorkerJob(episodeID: UUID, kind: String, priority: Int, on db: any Database) async throws {
-        if let existing = try await WorkerJob.query(on: db)
+        let activeJobs = try await WorkerJob.query(on: db)
             .filter(\.$episode.$id == episodeID)
             .filter(\.$kind == kind)
-            .first() {
+            .all()
+            .filter { $0.status == "pending" || $0.status == "claimed" }
+        if let existing = activeJobs.first {
             if existing.status == "pending" {
                 existing.priority = max(existing.priority, priority)
                 try await existing.save(on: db)
@@ -129,6 +174,10 @@ struct ArtifactController: RouteCollection {
         switch kind {
         case "transcript":
             return try await TranscriptArtifact.query(on: db)
+                .filter(\.$episode.$id == episodeID)
+                .first() != nil
+        case "fingerprint":
+            return try await FingerprintArtifact.query(on: db)
                 .filter(\.$episode.$id == episodeID)
                 .first() != nil
         case "chapters":
@@ -167,6 +216,15 @@ struct TranscriptUpload: Content {
     let model: String
     let segmentsJSON: String
     let textHash: String
+    let fingerprint: FingerprintUpload?
+}
+
+struct FingerprintUpload: Content {
+    let renditionID: String?
+    let algorithm: String
+    let chunkDuration: Double
+    let chunksJSON: String
+    let audioHash: String?
 }
 
 struct ChaptersUpload: Content {

@@ -20,17 +20,17 @@ final class BackendTests: XCTestCase {
             XCTAssertEqual(res.status, .ok)
             let response = try res.content.decode(ArtifactRequestResponse.self)
             XCTAssertEqual(response.transcriptCount, 1)
-            XCTAssertEqual(response.chapterCount, 1)
+            XCTAssertEqual(response.chapterCount, 0)
         })
 
         let jobs = try await WorkerJob.query(on: app.db).all()
-        XCTAssertEqual(jobs.count, 2)
+        XCTAssertEqual(jobs.count, 1)
         XCTAssertTrue(jobs.contains { $0.kind == "transcript" })
-        XCTAssertTrue(jobs.contains { $0.kind == "chapters" })
+        XCTAssertFalse(jobs.contains { $0.kind == "chapters" })
 
         let podcastDemand = try await PodcastDemand.query(on: app.db).filter(\.$podcast.$id == podcast.requireID()).first()
         XCTAssertEqual(podcastDemand?.transcriptRequests, 1)
-        XCTAssertEqual(podcastDemand?.chapterRequests, 1)
+        XCTAssertEqual(podcastDemand?.chapterRequests, 0)
     }
 
     func testWorkerPrefersPodcastsWithMoreTranscriptDemand() async throws {

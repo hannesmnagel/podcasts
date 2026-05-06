@@ -2,6 +2,8 @@ import Fluent
 import Vapor
 
 struct ArtifactController: RouteCollection {
+    private let chaptersEnabled = false
+
     func boot(routes: any RoutesBuilder) throws {
         let episodes = routes.grouped("episodes", ":id")
         episodes.post("artifact-requests", use: requestArtifacts)
@@ -17,7 +19,10 @@ struct ArtifactController: RouteCollection {
         let input = try req.content.decode(ArtifactDemandRequest.self)
         let demand = try await ArtifactRequest.query(on: req.db).filter(\.$episode.$id == episodeID).first() ?? ArtifactRequest(episodeID: episodeID)
         if input.transcript ?? true { demand.transcriptCount += 1 }
-        if input.chapters ?? true { demand.chapterCount += 1 }
+        // Chapterization is intentionally disabled for now. Keep accepting the
+        // request field for API compatibility, but do not increment demand or
+        // schedule chapter jobs until we have a cheaper/reliable chapterizer.
+        if chaptersEnabled, input.chapters ?? true { demand.chapterCount += 1 }
         if input.fingerprint ?? false { demand.fingerprintCount += 1 }
         try await demand.save(on: req.db)
 
@@ -26,7 +31,7 @@ struct ArtifactController: RouteCollection {
         if input.transcript ?? true, !(try await artifactExists(episodeID: episodeID, kind: "transcript", on: req.db)) {
             try await ensureWorkerJob(episodeID: episodeID, kind: "transcript", priority: demand.transcriptCount * 3 + podcastPriorityBoost, on: req.db)
         }
-        if input.chapters ?? true, !(try await artifactExists(episodeID: episodeID, kind: "chapters", on: req.db)) {
+        if chaptersEnabled, input.chapters ?? true, !(try await artifactExists(episodeID: episodeID, kind: "chapters", on: req.db)) {
             try await ensureWorkerJob(episodeID: episodeID, kind: "chapters", priority: demand.chapterCount * 2 + podcastPriorityBoost, on: req.db)
         }
         return ArtifactRequestResponse(episodeID: episode.stableID, transcriptCount: demand.transcriptCount, chapterCount: demand.chapterCount, fingerprintCount: demand.fingerprintCount)
@@ -36,7 +41,8 @@ struct ArtifactController: RouteCollection {
         let podcastID = episode.$podcast.id
         let demand = try await PodcastDemand.query(on: db).filter(\.$podcast.$id == podcastID).first() ?? PodcastDemand(podcastID: podcastID)
         if input.transcript ?? true { demand.transcriptRequests += 1 }
-        if input.chapters ?? true { demand.chapterRequests += 1 }
+        // See requestArtifacts: chapter jobs are disabled until chapterization is reliable.
+        if chaptersEnabled, input.chapters ?? true { demand.chapterRequests += 1 }
         if input.fingerprint ?? false { demand.fingerprintRequests += 1 }
         try await demand.save(on: db)
         try await boostPendingJobs(for: podcastID, by: demand.priorityScore, on: db)

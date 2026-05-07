@@ -356,8 +356,14 @@ class EpisodeListViewController: UITableViewController {
         switch mode {
         case .podcast(let podcastID):
             await client.requestPodcastCrawl(podcastID)
-            let fetched = try await client.episodes(for: podcastID)
-            await LibraryStore.cacheEpisodes(fetched, in: modelContext)
+            do {
+                let fetched = try await client.episodes(for: podcastID)
+                await LibraryStore.cacheEpisodes(fetched, in: modelContext)
+            } catch BackendError.notFound {
+                // Newly added optimistic subscriptions can be opened before the
+                // backend has created/crawled the feed. Show an empty detail
+                // instead of an error; a later refresh will hydrate episodes.
+            }
             return LibraryStore.localEpisodes(forPodcastIDs: [podcastID], in: modelContext)
         case .subscriptions(let podcastIDs):
             return try await loadSubscriptions(podcastIDs)

@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 struct BackendClient: Sendable {
@@ -268,30 +269,19 @@ struct EpisodeChapterDTO: Codable, Identifiable, Hashable, Sendable {
 
 enum StableID {
     static func podcastID(feedURL: URL) -> String {
-        "podcast-\(fnv1a64(normalizeURL(feedURL.absoluteString)))"
+        sha256(normalizeURL(feedURL.absoluteString))
     }
 
     private static func normalizeURL(_ raw: String) -> String {
-        guard let components = URLComponents(string: raw) else { return raw }
-        let scheme = components.scheme?.lowercased() ?? ""
-        let host = components.host?.lowercased() ?? ""
-        let path = components.percentEncodedPath.isEmpty ? "/" : components.percentEncodedPath
-        var normalized = scheme.isEmpty ? "" : "\(scheme)://"
-        normalized += host
-        if let port = components.port { normalized += ":\(port)" }
-        normalized += path
-        if let query = components.percentEncodedQuery, !query.isEmpty {
-            normalized += "?\(query)"
-        }
-        return normalized
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard var components = URLComponents(string: trimmed) else { return trimmed.lowercased() }
+        components.scheme = components.scheme?.lowercased()
+        components.host = components.host?.lowercased()
+        components.fragment = nil
+        return components.string ?? trimmed.lowercased()
     }
 
-    private static func fnv1a64(_ string: String) -> String {
-        var hash: UInt64 = 0xcbf29ce484222325
-        for byte in string.utf8 {
-            hash ^= UInt64(byte)
-            hash &*= 0x100000001b3
-        }
-        return String(hash, radix: 16)
+    private static func sha256(_ value: String) -> String {
+        SHA256.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined()
     }
 }

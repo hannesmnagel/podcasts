@@ -215,19 +215,22 @@ final class SearchViewController: UITableViewController, UISearchResultsUpdating
             addingFeedURL = nil
             tableView.reloadData()
         }
+        let placeholder = client.optimisticPodcast(feedURL: url)
+        LibraryStore.subscribe(to: placeholder, in: modelContext)
+        query = ""
+        results = EpisodeSearchDTO()
+        refreshVisibleEpisodeSnapshot()
+        loadSubscriptions()
+        updateRows()
+
         do {
-            let placeholder = client.optimisticPodcast(feedURL: url)
-            LibraryStore.subscribe(to: placeholder, in: modelContext)
-            query = ""
-            results = EpisodeSearchDTO()
-            refreshVisibleEpisodeSnapshot()
-            loadSubscriptions()
-            updateRows()
             let podcast = await client.hydratedPodcast(afterAdding: try await client.addPodcast(feedURL: url))
             LibraryStore.subscribe(to: podcast, in: modelContext)
             loadSubscriptions()
         } catch {
-            showError(error)
+            // Keep the optimistic subscription visible. The backend may still be
+            // creating/crawling the feed, and surfacing that transient 502 makes
+            // the successful local add feel broken.
         }
     }
 
@@ -250,15 +253,17 @@ final class SearchViewController: UITableViewController, UISearchResultsUpdating
             addingFeedURL = nil
             tableView.reloadData()
         }
+        LibraryStore.subscribe(to: client.optimisticPodcast(feedURL: url, title: podcast.title), in: modelContext)
+        loadSubscriptions()
+
         do {
-            LibraryStore.subscribe(to: client.optimisticPodcast(feedURL: url, title: podcast.title), in: modelContext)
-            loadSubscriptions()
             let addedPodcast = await client.hydratedPodcast(afterAdding: try await client.addPodcast(feedURL: url))
             LibraryStore.subscribe(to: addedPodcast, in: modelContext)
             loadSubscriptions()
             await search(query.trimmingCharacters(in: .whitespacesAndNewlines))
         } catch {
-            showError(error)
+            // Keep the optimistic subscription visible; metadata will hydrate on
+            // the next successful background refresh.
         }
     }
 

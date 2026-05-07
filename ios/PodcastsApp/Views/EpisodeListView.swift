@@ -25,9 +25,6 @@ class EpisodeListViewController: UITableViewController {
     private var downloadProgressCancellable: AnyCancellable?
     private var navigationDownloadProgressCancellable: AnyCancellable?
     private var hasDownloadButtonInNavigation = false
-    private var dragSelectionGesture: UIPanGestureRecognizer?
-    private var dragSelectionShouldSelect = true
-    private var dragSelectionVisited: Set<IndexPath> = []
     private var isLoading = false
 
     init(title: String, mode: EpisodeListMode, modelContext: ModelContext, player: PlayerController) {
@@ -52,7 +49,6 @@ class EpisodeListViewController: UITableViewController {
         tableView.rowHeight = 112
         tableView.separatorInset = UIEdgeInsets(top: 0, left: 100, bottom: 0, right: 0)
         tableView.allowsMultipleSelectionDuringEditing = true
-        configureDragSelectionGesture()
         configureNavigationItems()
         bindDownloadProgressNavigationItem()
         configurePodcastHeaderIfNeeded()
@@ -125,41 +121,6 @@ class EpisodeListViewController: UITableViewController {
         navigationController?.setToolbarHidden(!editing, animated: animated)
         tabBarController?.setTabBarHidden(editing, animated: animated)
         (tabBarController as? RootTabController)?.setMiniPlayerSuppressed(editing, animated: animated)
-        updateSelectionToolbar()
-    }
-
-    private func configureDragSelectionGesture() {
-        let gesture = UIPanGestureRecognizer(target: self, action: #selector(handleDragSelection(_:)))
-        gesture.cancelsTouchesInView = false
-        tableView.addGestureRecognizer(gesture)
-        dragSelectionGesture = gesture
-    }
-
-    @objc private func handleDragSelection(_ gesture: UIPanGestureRecognizer) {
-        guard tableView.isEditing else { return }
-        let location = gesture.location(in: tableView)
-        guard let indexPath = tableView.indexPathForRow(at: location) else { return }
-
-        switch gesture.state {
-        case .began:
-            dragSelectionVisited = []
-            dragSelectionShouldSelect = tableView.indexPathsForSelectedRows?.contains(indexPath) != true
-            applyDragSelection(at: indexPath)
-        case .changed:
-            applyDragSelection(at: indexPath)
-        default:
-            dragSelectionVisited = []
-        }
-    }
-
-    private func applyDragSelection(at indexPath: IndexPath) {
-        guard visibleEpisodeSnapshot.indices.contains(indexPath.row), !dragSelectionVisited.contains(indexPath) else { return }
-        dragSelectionVisited.insert(indexPath)
-        if dragSelectionShouldSelect {
-            tableView.selectRow(at: indexPath, animated: true, scrollPosition: .none)
-        } else {
-            tableView.deselectRow(at: indexPath, animated: true)
-        }
         updateSelectionToolbar()
     }
 

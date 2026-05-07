@@ -8,9 +8,6 @@ final class AllPodcastsViewController: UITableViewController, UIDocumentPickerDe
     private let client = BackendClient()
     private var subscriptions: [PodcastSubscription] = []
     private weak var activeAppSettingsController: AppSettingsViewController?
-    private var dragSelectionGesture: UIPanGestureRecognizer?
-    private var dragSelectionShouldSelect = true
-    private var dragSelectionVisited: Set<IndexPath> = []
     private var isRefreshingPodcastMetadata = false
 
     init(modelContext: ModelContext, player: PlayerController) {
@@ -30,7 +27,6 @@ final class AllPodcastsViewController: UITableViewController, UIDocumentPickerDe
         tableView.register(PodcastSubscriptionCell.self, forCellReuseIdentifier: PodcastSubscriptionCell.reuseIdentifier)
         tableView.rowHeight = 82
         tableView.allowsMultipleSelectionDuringEditing = true
-        configureDragSelectionGesture()
         navigationItem.leftBarButtonItem = UIBarButtonItem(image: UIImage(systemName: "gearshape"), style: .plain, target: self, action: #selector(showAppSettings))
         navigationItem.rightBarButtonItem = editButtonItem
         updateSelectionToolbar()
@@ -88,41 +84,6 @@ final class AllPodcastsViewController: UITableViewController, UIDocumentPickerDe
         navigationController?.setToolbarHidden(!editing, animated: animated)
         tabBarController?.setTabBarHidden(editing, animated: animated)
         (tabBarController as? RootTabController)?.setMiniPlayerSuppressed(editing, animated: animated)
-        updateSelectionToolbar()
-    }
-
-    private func configureDragSelectionGesture() {
-        let gesture = UIPanGestureRecognizer(target: self, action: #selector(handleDragSelection(_:)))
-        gesture.cancelsTouchesInView = false
-        tableView.addGestureRecognizer(gesture)
-        dragSelectionGesture = gesture
-    }
-
-    @objc private func handleDragSelection(_ gesture: UIPanGestureRecognizer) {
-        guard tableView.isEditing else { return }
-        let location = gesture.location(in: tableView)
-        guard let indexPath = tableView.indexPathForRow(at: location) else { return }
-
-        switch gesture.state {
-        case .began:
-            dragSelectionVisited = []
-            dragSelectionShouldSelect = tableView.indexPathsForSelectedRows?.contains(indexPath) != true
-            applyDragSelection(at: indexPath)
-        case .changed:
-            applyDragSelection(at: indexPath)
-        default:
-            dragSelectionVisited = []
-        }
-    }
-
-    private func applyDragSelection(at indexPath: IndexPath) {
-        guard subscriptions.indices.contains(indexPath.row), !dragSelectionVisited.contains(indexPath) else { return }
-        dragSelectionVisited.insert(indexPath)
-        if dragSelectionShouldSelect {
-            tableView.selectRow(at: indexPath, animated: true, scrollPosition: .none)
-        } else {
-            tableView.deselectRow(at: indexPath, animated: true)
-        }
         updateSelectionToolbar()
     }
 

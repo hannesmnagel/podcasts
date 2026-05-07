@@ -21,19 +21,12 @@ final class AllEpisodesViewController: EpisodeListViewController {
         configureNavigationItems()
     }
 
-    override func additionalRightBarButtonItems() -> [UIBarButtonItem] {
-        [UIBarButtonItem(systemItem: .refresh, primaryAction: UIAction { [weak self] _ in
-            self?.refreshFromSubscriptions()
-        })]
-    }
+    override func additionalRightBarButtonItems() -> [UIBarButtonItem] { [] }
 
     func openEpisode(_ episode: EpisodeDTO) {
         showEpisode(episode)
     }
 
-    private func refreshFromSubscriptions() {
-        reload(mode: .subscriptions(Self.subscriptionIDs(in: modelContext)))
-    }
 
     private static func subscriptionIDs(in modelContext: ModelContext) -> [String] {
         var descriptor = FetchDescriptor<PodcastSubscription>(sortBy: [SortDescriptor(\.sortIndex)])

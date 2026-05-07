@@ -13,21 +13,27 @@ struct BackendClient: Sendable {
     func podcasts() async throws -> [PodcastDTO] { try await get("podcasts") }
 
     func addPodcast(feedURL: URL) async throws -> PodcastDTO {
-        try await post("podcasts", body: CreatePodcastDTO(feedURL: feedURL.absoluteString, title: nil, crawlImmediately: true))
+        try await post("podcasts", body: CreatePodcastDTO(feedURL: feedURL.absoluteString, title: nil, crawlImmediately: false))
     }
 
     func crawlPodcast(_ podcastID: String) async throws -> PodcastDTO {
         try await post("podcasts/\(podcastID)/crawl")
     }
 
+    @discardableResult
+    func requestPodcastCrawl(_ podcastID: String) async -> Bool {
+        (try? await postEmpty("podcasts/\(podcastID)/crawl-request")) != nil
+    }
+
     func hydratedPodcast(afterAdding podcast: PodcastDTO) async -> PodcastDTO {
         if podcast.hasDisplayMetadata { return podcast }
 
-        // Adding a new feed already schedules a backend crawl. Do not call the
-        // synchronous crawl endpoint from the add flow: first-time crawls can take
-        // long enough to hit the reverse-proxy timeout and surface as a 502 even
-        // though the podcast was created. Poll briefly for the async crawl result
-        // and otherwise subscribe to the placeholder immediately.
+        // Do not call the synchronous crawl endpoint from the add flow: first-time
+        // crawls can take long enough to hit the reverse-proxy timeout and surface
+        // as a 502 even though the podcast was created. Ask the backend to crawl
+        // asynchronously, poll briefly for metadata, and otherwise subscribe to
+        // the placeholder immediately.
+        await requestPodcastCrawl(podcast.stableID)
         for delay in [250_000_000, 500_000_000, 1_000_000_000, 2_000_000_000] {
             try? await Task.sleep(nanoseconds: UInt64(delay))
             guard let refreshed = try? await podcasts().first(where: { $0.stableID == podcast.stableID }) else {
@@ -97,6 +103,13 @@ struct BackendClient: Sendable {
         let (data, response) = try await URLSession.shared.data(for: request)
         try validate(response, data: data)
         return try decoder.decode(T.self, from: data)
+    }
+
+    private func postEmpty(_ path: String) async throws {
+        var request = URLRequest(url: url(for: path))
+        request.httpMethod = "POST"
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try validate(response, data: data)
     }
 
     private func url(for path: String) -> URL {

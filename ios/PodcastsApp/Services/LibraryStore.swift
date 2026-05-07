@@ -44,6 +44,8 @@ enum LibraryStore {
         let stateDescriptor = FetchDescriptor<LocalEpisodeState>()
         let states = ((try? context.fetch(stateDescriptor)) ?? []).filter { $0.podcastStableID == podcastID }
         let episodeIDs = Set(states.map(\.episodeStableID))
+        let progressIDsToCancel = Set(episodeIDs.flatMap { [$0, "policy-\($0)"] })
+        Task { await LocalMediaCache.cancelDownloads(progressIDs: progressIDsToCancel) }
         states.forEach { state in
             if let downloadedFileURL = state.downloadedFileURL {
                 Task { await LocalMediaCache.removeFileIfPresent(at: downloadedFileURL) }
@@ -57,6 +59,7 @@ enum LibraryStore {
             context.delete($0)
         }
         context.delete(subscription)
+        try? context.save()
     }
 
     static func episodeState(for episode: EpisodeDTO, in context: ModelContext) -> LocalEpisodeState? {
@@ -173,6 +176,7 @@ enum LibraryStore {
     }
 
     static func removeDownload(for episode: EpisodeDTO, in context: ModelContext) {
+        Task { await LocalMediaCache.cancelDownloads(progressIDs: [episode.stableID, "policy-\(episode.stableID)"]) }
         let state = episodeState(for: episode, in: context) ?? makeEpisodeState(for: episode, in: context)
         let localURL = state.downloadedFileURL
         state.downloadedFileURL = nil
@@ -180,6 +184,7 @@ enum LibraryStore {
         if let localURL {
             Task { await LocalMediaCache.removeFileIfPresent(at: localURL) }
         }
+        try? context.save()
     }
 
     static func removeDownloads(for episodes: [EpisodeDTO], in context: ModelContext) {

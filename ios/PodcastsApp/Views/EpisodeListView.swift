@@ -48,6 +48,8 @@ class EpisodeListViewController: UITableViewController {
         tableView.register(EpisodeCell.self, forCellReuseIdentifier: EpisodeCell.reuseIdentifier)
         tableView.rowHeight = 112
         tableView.separatorInset = UIEdgeInsets(top: 0, left: 100, bottom: 0, right: 0)
+        tableView.allowsSelectionDuringEditing = true
+        tableView.allowsMultipleSelection = true
         tableView.allowsMultipleSelectionDuringEditing = true
         configureNavigationItems()
         bindDownloadProgressNavigationItem()
@@ -111,6 +113,20 @@ class EpisodeListViewController: UITableViewController {
 
     override func tableView(_ tableView: UITableView, didDeselectRowAt indexPath: IndexPath) {
         guard tableView.isEditing else { return }
+        updateSelectionToolbar()
+    }
+
+    override func tableView(_ tableView: UITableView, shouldBeginMultipleSelectionInteractionAt indexPath: IndexPath) -> Bool {
+        true
+    }
+
+    override func tableView(_ tableView: UITableView, didBeginMultipleSelectionInteractionAt indexPath: IndexPath) {
+        setEditing(true, animated: true)
+        tableView.selectRow(at: indexPath, animated: true, scrollPosition: .none)
+        updateSelectionToolbar()
+    }
+
+    override func tableViewDidEndMultipleSelectionInteraction(_ tableView: UITableView) {
         updateSelectionToolbar()
     }
 
@@ -339,9 +355,7 @@ class EpisodeListViewController: UITableViewController {
     private func loadEpisodes() async throws -> [EpisodeDTO] {
         switch mode {
         case .podcast(let podcastID):
-            if let podcast = try? await client.crawlPodcast(podcastID) {
-                LibraryStore.subscribe(to: podcast, in: modelContext)
-            }
+            await client.requestPodcastCrawl(podcastID)
             let fetched = try await client.episodes(for: podcastID)
             await LibraryStore.cacheEpisodes(fetched, in: modelContext)
             return LibraryStore.localEpisodes(forPodcastIDs: [podcastID], in: modelContext)
@@ -360,7 +374,7 @@ class EpisodeListViewController: UITableViewController {
         try await withThrowingTaskGroup(of: (String, [EpisodeDTO]).self) { group in
             for podcastID in podcastIDs {
                 group.addTask {
-                    _ = try? await self.client.crawlPodcast(podcastID)
+                    await self.client.requestPodcastCrawl(podcastID)
                     return (podcastID, try await self.client.episodes(for: podcastID))
                 }
             }

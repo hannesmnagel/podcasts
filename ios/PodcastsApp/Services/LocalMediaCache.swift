@@ -63,6 +63,11 @@ final class DownloadProgressCenter {
     func clear(id: String) {
         progresses[id] = nil
     }
+
+    func clear(ids: Set<String>) {
+        guard !ids.isEmpty else { return }
+        progresses = progresses.filter { key, _ in !ids.contains(key) }
+    }
 }
 
 enum LocalMediaCache {
@@ -98,6 +103,18 @@ enum LocalMediaCache {
 
     static func removeCachedFile(for remoteURL: URL) async {
         try? await removeFile(at: cachedFileURL(for: remoteURL))
+    }
+
+    static func cancelDownload(progressID: String) async {
+        ProgressReportingDownloader.cancel(progressID: progressID)
+        await DownloadProgressCenter.shared.clear(id: progressID)
+    }
+
+    static func cancelDownloads(progressIDs: Set<String>) async {
+        for progressID in progressIDs {
+            ProgressReportingDownloader.cancel(progressID: progressID)
+        }
+        await DownloadProgressCenter.shared.clear(ids: progressIDs)
     }
 
     static func removeFileIfPresent(at url: URL) async {
@@ -141,6 +158,9 @@ enum LocalMediaCache {
 }
 
 private final class ProgressReportingDownloader: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
+    private static let activeLock = NSLock()
+    nonisolated(unsafe) private static var activeSessions: [String: URLSession] = [:]
+
     private let progressID: String?
     private var continuation: CheckedContinuation<URL, Error>?
     private var session: URLSession?
@@ -154,11 +174,33 @@ private final class ProgressReportingDownloader: NSObject, URLSessionDownloadDel
         return try await downloader.download(from: url)
     }
 
+    static func cancel(progressID: String) {
+        activeLock.lock()
+        let session = activeSessions.removeValue(forKey: progressID)
+        activeLock.unlock()
+        session?.invalidateAndCancel()
+    }
+
+    private static func register(_ session: URLSession, progressID: String?) {
+        guard let progressID else { return }
+        activeLock.lock()
+        activeSessions[progressID] = session
+        activeLock.unlock()
+    }
+
+    private static func unregister(progressID: String?) {
+        guard let progressID else { return }
+        activeLock.lock()
+        activeSessions[progressID] = nil
+        activeLock.unlock()
+    }
+
     private func download(from url: URL) async throws -> URL {
         try await withCheckedThrowingContinuation { continuation in
             self.continuation = continuation
             let session = URLSession(configuration: .default, delegate: self, delegateQueue: nil)
             self.session = session
+            Self.register(session, progressID: progressID)
             session.downloadTask(with: url).resume()
         }
     }
@@ -183,6 +225,7 @@ private final class ProgressReportingDownloader: NSObject, URLSessionDownloadDel
             continuation.resume(throwing: error)
         }
         self.continuation = nil
+        Self.unregister(progressID: progressID)
         session.invalidateAndCancel()
     }
 
@@ -190,6 +233,7 @@ private final class ProgressReportingDownloader: NSObject, URLSessionDownloadDel
         guard let error, let continuation else { return }
         continuation.resume(throwing: error)
         self.continuation = nil
+        Self.unregister(progressID: progressID)
         session.invalidateAndCancel()
     }
 }

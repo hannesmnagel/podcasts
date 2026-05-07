@@ -7,6 +7,7 @@ struct PodcastController: RouteCollection {
         podcasts.post(use: create)
         podcasts.get(use: index)
         podcasts.post(":id", "crawl", use: crawl)
+        podcasts.post(":id", "crawl-request", use: requestCrawl)
     }
 
     func create(req: Request) async throws -> PodcastResponse {
@@ -38,6 +39,12 @@ struct PodcastController: RouteCollection {
         let podcast = try await findPodcast(req)
         try await FeedCrawler().crawl(podcast: podcast, on: req.application)
         return PodcastResponse(podcast: try await Podcast.find(try podcast.requireID(), on: req.db) ?? podcast)
+    }
+
+    func requestCrawl(req: Request) async throws -> HTTPStatus {
+        let podcast = try await findPodcast(req)
+        scheduleCrawl(for: podcast, on: req.application)
+        return .accepted
     }
 
     private func scheduleCrawl(for podcast: Podcast, on app: Application) {

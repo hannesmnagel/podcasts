@@ -26,6 +26,8 @@ final class AllPodcastsViewController: UITableViewController, UIDocumentPickerDe
         super.viewDidLoad()
         tableView.register(PodcastSubscriptionCell.self, forCellReuseIdentifier: PodcastSubscriptionCell.reuseIdentifier)
         tableView.rowHeight = 82
+        tableView.allowsSelectionDuringEditing = true
+        tableView.allowsMultipleSelection = true
         tableView.allowsMultipleSelectionDuringEditing = true
         navigationItem.leftBarButtonItem = UIBarButtonItem(image: UIImage(systemName: "gearshape"), style: .plain, target: self, action: #selector(showAppSettings))
         navigationItem.rightBarButtonItem = editButtonItem
@@ -75,6 +77,20 @@ final class AllPodcastsViewController: UITableViewController, UIDocumentPickerDe
 
     override func tableView(_ tableView: UITableView, didDeselectRowAt indexPath: IndexPath) {
         guard tableView.isEditing else { return }
+        updateSelectionToolbar()
+    }
+
+    override func tableView(_ tableView: UITableView, shouldBeginMultipleSelectionInteractionAt indexPath: IndexPath) -> Bool {
+        true
+    }
+
+    override func tableView(_ tableView: UITableView, didBeginMultipleSelectionInteractionAt indexPath: IndexPath) {
+        setEditing(true, animated: true)
+        tableView.selectRow(at: indexPath, animated: true, scrollPosition: .none)
+        updateSelectionToolbar()
+    }
+
+    override func tableViewDidEndMultipleSelectionInteraction(_ tableView: UITableView) {
         updateSelectionToolbar()
     }
 
@@ -139,9 +155,7 @@ final class AllPodcastsViewController: UITableViewController, UIDocumentPickerDe
         Task {
             defer { isRefreshingPodcastMetadata = false }
             for podcastID in missingMetadataIDs {
-                if let podcast = try? await client.crawlPodcast(podcastID) {
-                    LibraryStore.subscribe(to: podcast, in: modelContext)
-                }
+                await client.requestPodcastCrawl(podcastID)
             }
             guard let podcasts = try? await client.podcasts() else { return }
             LibraryStore.updateExistingSubscriptions(with: podcasts, in: modelContext)

@@ -216,13 +216,16 @@ final class SearchViewController: UITableViewController, UISearchResultsUpdating
             tableView.reloadData()
         }
         do {
-            let podcast = await client.hydratedPodcast(afterAdding: try await client.addPodcast(feedURL: url))
-            LibraryStore.subscribe(to: podcast, in: modelContext)
+            let placeholder = client.optimisticPodcast(feedURL: url)
+            LibraryStore.subscribe(to: placeholder, in: modelContext)
             query = ""
             results = EpisodeSearchDTO()
             refreshVisibleEpisodeSnapshot()
             loadSubscriptions()
             updateRows()
+            let podcast = await client.hydratedPodcast(afterAdding: try await client.addPodcast(feedURL: url))
+            LibraryStore.subscribe(to: podcast, in: modelContext)
+            loadSubscriptions()
         } catch {
             showError(error)
         }
@@ -231,6 +234,8 @@ final class SearchViewController: UITableViewController, UISearchResultsUpdating
     private func addKnownPodcast(_ podcast: PodcastDTO) async {
         addingFeedURL = podcast.feedURL
         tableView.reloadData()
+        LibraryStore.subscribe(to: podcast, in: modelContext)
+        loadSubscriptions()
         LibraryStore.subscribe(to: await client.hydratedPodcast(afterAdding: podcast), in: modelContext)
         loadSubscriptions()
         addingFeedURL = nil
@@ -246,6 +251,8 @@ final class SearchViewController: UITableViewController, UISearchResultsUpdating
             tableView.reloadData()
         }
         do {
+            LibraryStore.subscribe(to: client.optimisticPodcast(feedURL: url, title: podcast.title), in: modelContext)
+            loadSubscriptions()
             let addedPodcast = await client.hydratedPodcast(afterAdding: try await client.addPodcast(feedURL: url))
             LibraryStore.subscribe(to: addedPodcast, in: modelContext)
             loadSubscriptions()

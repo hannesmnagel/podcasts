@@ -12,6 +12,18 @@ struct BackendClient: Sendable {
 
     func podcasts() async throws -> [PodcastDTO] { try await get("podcasts") }
 
+    func optimisticPodcast(feedURL: URL, title: String? = nil) -> PodcastDTO {
+        let trimmedTitle = title?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return PodcastDTO(
+            id: nil,
+            stableID: StableID.podcastID(feedURL: feedURL),
+            feedURL: feedURL.absoluteString,
+            title: trimmedTitle?.isEmpty == false ? trimmedTitle! : feedURL.absoluteString,
+            description: nil,
+            imageURL: nil
+        )
+    }
+
     func addPodcast(feedURL: URL) async throws -> PodcastDTO {
         try await post("podcasts", body: CreatePodcastDTO(feedURL: feedURL.absoluteString, title: nil, crawlImmediately: false))
     }
@@ -251,5 +263,35 @@ struct EpisodeChapterDTO: Codable, Identifiable, Hashable, Sendable {
 
     var displayImageURL: URL? {
         (imageURL ?? artworkURL).flatMap(URL.init(string:))
+    }
+}
+
+enum StableID {
+    static func podcastID(feedURL: URL) -> String {
+        "podcast-\(fnv1a64(normalizeURL(feedURL.absoluteString)))"
+    }
+
+    private static func normalizeURL(_ raw: String) -> String {
+        guard let components = URLComponents(string: raw) else { return raw }
+        let scheme = components.scheme?.lowercased() ?? ""
+        let host = components.host?.lowercased() ?? ""
+        let path = components.percentEncodedPath.isEmpty ? "/" : components.percentEncodedPath
+        var normalized = scheme.isEmpty ? "" : "\(scheme)://"
+        normalized += host
+        if let port = components.port { normalized += ":\(port)" }
+        normalized += path
+        if let query = components.percentEncodedQuery, !query.isEmpty {
+            normalized += "?\(query)"
+        }
+        return normalized
+    }
+
+    private static func fnv1a64(_ string: String) -> String {
+        var hash: UInt64 = 0xcbf29ce484222325
+        for byte in string.utf8 {
+            hash ^= UInt64(byte)
+            hash &*= 0x100000001b3
+        }
+        return String(hash, radix: 16)
     }
 }

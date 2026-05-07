@@ -24,6 +24,10 @@ class EpisodeListViewController: UITableViewController {
     private let podcastHeaderView = PodcastDetailHeaderView()
     private var downloadProgressCancellable: AnyCancellable?
     private var navigationDownloadProgressCancellable: AnyCancellable?
+    private var hasDownloadButtonInNavigation = false
+    private var dragSelectionGesture: UIPanGestureRecognizer?
+    private var dragSelectionShouldSelect = true
+    private var dragSelectionVisited: Set<IndexPath> = []
     private var isLoading = false
 
     init(title: String, mode: EpisodeListMode, modelContext: ModelContext, player: PlayerController) {
@@ -48,6 +52,7 @@ class EpisodeListViewController: UITableViewController {
         tableView.rowHeight = 112
         tableView.separatorInset = UIEdgeInsets(top: 0, left: 100, bottom: 0, right: 0)
         tableView.allowsMultipleSelectionDuringEditing = true
+        configureDragSelectionGesture()
         configureNavigationItems()
         bindDownloadProgressNavigationItem()
         configurePodcastHeaderIfNeeded()
@@ -123,6 +128,41 @@ class EpisodeListViewController: UITableViewController {
         updateSelectionToolbar()
     }
 
+    private func configureDragSelectionGesture() {
+        let gesture = UIPanGestureRecognizer(target: self, action: #selector(handleDragSelection(_:)))
+        gesture.cancelsTouchesInView = false
+        tableView.addGestureRecognizer(gesture)
+        dragSelectionGesture = gesture
+    }
+
+    @objc private func handleDragSelection(_ gesture: UIPanGestureRecognizer) {
+        guard tableView.isEditing else { return }
+        let location = gesture.location(in: tableView)
+        guard let indexPath = tableView.indexPathForRow(at: location) else { return }
+
+        switch gesture.state {
+        case .began:
+            dragSelectionVisited = []
+            dragSelectionShouldSelect = tableView.indexPathsForSelectedRows?.contains(indexPath) != true
+            applyDragSelection(at: indexPath)
+        case .changed:
+            applyDragSelection(at: indexPath)
+        default:
+            dragSelectionVisited = []
+        }
+    }
+
+    private func applyDragSelection(at indexPath: IndexPath) {
+        guard visibleEpisodeSnapshot.indices.contains(indexPath.row), !dragSelectionVisited.contains(indexPath) else { return }
+        dragSelectionVisited.insert(indexPath)
+        if dragSelectionShouldSelect {
+            tableView.selectRow(at: indexPath, animated: true, scrollPosition: .none)
+        } else {
+            tableView.deselectRow(at: indexPath, animated: true)
+        }
+        updateSelectionToolbar()
+    }
+
     override func tableView(_ tableView: UITableView, trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath) -> UISwipeActionsConfiguration? {
         guard !tableView.isEditing else { return nil }
         let episode = visibleEpisodeSnapshot[indexPath.row]
@@ -191,16 +231,19 @@ class EpisodeListViewController: UITableViewController {
     }
 
     func configureNavigationItems() {
+        hasDownloadButtonInNavigation = hasVisibleDownloadProgress
         var items: [UIBarButtonItem] = [editButtonItem]
         items.append(contentsOf: additionalRightBarButtonItems())
-        if hasVisibleDownloadProgress {
+        if hasDownloadButtonInNavigation {
             items.append(UIBarButtonItem(image: UIImage(systemName: "arrow.down.circle.fill"), primaryAction: UIAction { [weak self] _ in
                 self?.showDownloadsSheet()
             }))
             items.last?.accessibilityLabel = "Downloads"
         }
         if case .podcast = mode {
-            items.append(UIBarButtonItem(image: UIImage(systemName: "ellipsis.circle"), menu: podcastOptionsMenu()))
+            let menuItem = UIBarButtonItem(image: UIImage(systemName: "ellipsis.circle"), menu: podcastOptionsMenu())
+            menuItem.accessibilityLabel = "Podcast Options"
+            items.append(menuItem)
         }
         navigationItem.rightBarButtonItems = items.reversed()
     }
@@ -215,7 +258,10 @@ class EpisodeListViewController: UITableViewController {
         navigationDownloadProgressCancellable = DownloadProgressCenter.shared.$progresses
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
-                self?.configureNavigationItems()
+                guard let self else { return }
+                let shouldShowDownloadButton = self.hasVisibleDownloadProgress
+                guard shouldShowDownloadButton != self.hasDownloadButtonInNavigation else { return }
+                self.configureNavigationItems()
             }
     }
 

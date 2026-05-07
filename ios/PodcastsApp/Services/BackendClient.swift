@@ -22,11 +22,13 @@ struct BackendClient: Sendable {
 
     func hydratedPodcast(afterAdding podcast: PodcastDTO) async -> PodcastDTO {
         if podcast.hasDisplayMetadata { return podcast }
-        if let crawled = try? await crawlPodcast(podcast.stableID), crawled.hasDisplayMetadata {
-            return crawled
-        }
 
-        for delay in [250_000_000, 500_000_000, 1_000_000_000] {
+        // Adding a new feed already schedules a backend crawl. Do not call the
+        // synchronous crawl endpoint from the add flow: first-time crawls can take
+        // long enough to hit the reverse-proxy timeout and surface as a 502 even
+        // though the podcast was created. Poll briefly for the async crawl result
+        // and otherwise subscribe to the placeholder immediately.
+        for delay in [250_000_000, 500_000_000, 1_000_000_000, 2_000_000_000] {
             try? await Task.sleep(nanoseconds: UInt64(delay))
             guard let refreshed = try? await podcasts().first(where: { $0.stableID == podcast.stableID }) else {
                 continue

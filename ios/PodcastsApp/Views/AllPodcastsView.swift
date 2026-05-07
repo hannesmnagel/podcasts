@@ -245,6 +245,7 @@ final class AppSettingsViewController: UITableViewController {
     private enum Row: Int, CaseIterable {
         case importOPML
         case globalDownloads
+        case chapterSkips
         case seekBack
         case seekForward
     }
@@ -269,6 +270,11 @@ final class AppSettingsViewController: UITableViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         tableView.register(UITableViewCell.self, forCellReuseIdentifier: "Cell")
+    }
+
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        tableView.reloadData()
     }
 
     override func numberOfSections(in tableView: UITableView) -> Int {
@@ -306,6 +312,11 @@ final class AppSettingsViewController: UITableViewController {
             configuration.text = "Default Download Policy"
             configuration.secondaryText = DownloadSettings.globalPolicy.title
             cell.accessoryType = .disclosureIndicator
+        case .chapterSkips:
+            configuration.text = "Chapter Skip Rules"
+            let count = ChapterSkipRuleStore.rules.count
+            configuration.secondaryText = count == 1 ? "1 rule" : "\(count) rules"
+            cell.accessoryType = .disclosureIndicator
         case .seekBack:
             configuration.text = "Back Skip"
             configuration.secondaryText = "\(Int(SeekSettings.backSeconds)) seconds"
@@ -327,6 +338,9 @@ final class AppSettingsViewController: UITableViewController {
             importOPML?()
         case .globalDownloads:
             let controller = DownloadSettingsViewController(subscription: nil)
+            navigationController?.pushViewController(controller, animated: true)
+        case .chapterSkips:
+            let controller = ChapterSkipRulesViewController()
             navigationController?.pushViewController(controller, animated: true)
         case .seekBack, .seekForward:
             break

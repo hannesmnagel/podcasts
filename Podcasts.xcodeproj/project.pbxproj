@@ -33,6 +33,7 @@
 		CF5155921133475FEE365FDF /* DownloadSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = ECA6BB4992C4C3E331120520 /* DownloadSettings.swift */; };
 		D33149ACB7F6342B1E389034 /* BackendClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 37195B288FF63CB94CF9FD15 /* BackendClient.swift */; };
 		E87DDCD0AD82451592F2DEC3 /* LocalEpisodeState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B8AA770790EC7DA256269FC /* LocalEpisodeState.swift */; };
+		F7B8B9683B6D09B5176C05AA /* ChapterSkipRulesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 661448609AF848CF2EE58F5A /* ChapterSkipRulesView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -47,6 +48,7 @@
 		5B8AA770790EC7DA256269FC /* LocalEpisodeState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalEpisodeState.swift; sourceTree = "<group>"; };
 		5E0ED6534E4986F54972EC12 /* Playlist.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Playlist.swift; sourceTree = "<group>"; };
 		637695869DF00B55472FA7AC /* ArtifactDataProcessor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArtifactDataProcessor.swift; sourceTree = "<group>"; };
+		661448609AF848CF2EE58F5A /* ChapterSkipRulesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChapterSkipRulesView.swift; sourceTree = "<group>"; };
 		6F48B7A94CCEC79440025DB3 /* EpisodeDataProcessor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EpisodeDataProcessor.swift; sourceTree = "<group>"; };
 		704BAB4A9425AA0B9C7144F3 /* PodcastSubscription.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PodcastSubscription.swift; sourceTree = "<group>"; };
 		7F2076613D6BD9246738A4E6 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
@@ -110,6 +112,7 @@
 			children = (
 				F97767F6F6864ACEC2591D01 /* AllEpisodesView.swift */,
 				E11208B42B85C23F3D8B31EC /* AllPodcastsView.swift */,
+				661448609AF848CF2EE58F5A /* ChapterSkipRulesView.swift */,
 				B5C0A90DF27AA70BF24944D0 /* EpisodeDetailView.swift */,
 				4BD4261567CDA01B0EA4D8E2 /* EpisodeListView.swift */,
 				F8B729364B5024ABA775E3BB /* MiniPlayerView.swift */,
@@ -237,6 +240,7 @@
 				CCAB1B580940769F80DFBECA /* AudioFingerprint.swift in Sources */,
 				D33149ACB7F6342B1E389034 /* BackendClient.swift in Sources */,
 				168118ECCED19189E112292B /* ChapterSkipRule.swift in Sources */,
+				F7B8B9683B6D09B5176C05AA /* ChapterSkipRulesView.swift in Sources */,
 				CF5155921133475FEE365FDF /* DownloadSettings.swift in Sources */,
 				B0C0891C67EF77DA0223693E /* EpisodeDataProcessor.swift in Sources */,
 				C134F9F079F2EA7A181CBBCD /* EpisodeDetailView.swift in Sources */,
@@ -325,7 +329,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 6;
+				CURRENT_PROJECT_VERSION = 7;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				INFOPLIST_FILE = ios/PodcastsApp/Info.plist;
 				INFOPLIST_KEY_BackendBaseURL = "https://podcasts.hannesnagel.com";
@@ -350,7 +354,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 6;
+				CURRENT_PROJECT_VERSION = 7;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				INFOPLIST_FILE = ios/PodcastsApp/Info.plist;
 				INFOPLIST_KEY_BackendBaseURL = "https://podcasts.hannesnagel.com";

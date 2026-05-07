@@ -56,20 +56,22 @@ enum ChapterSkipRuleStore {
     }
 
     static func addExactTitle(_ title: String) {
-        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        var current = rules
-        current.append(ChapterSkipRule(kind: .exactTitle, pattern: trimmed))
-        rules = current
+        _ = save(ChapterSkipRule(kind: .exactTitle, pattern: title))
     }
 
     static func addRegex(_ pattern: String) -> Bool {
-        let trimmed = pattern.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, (try? NSRegularExpression(pattern: trimmed, options: [.caseInsensitive])) != nil else {
-            return false
-        }
+        save(ChapterSkipRule(kind: .regex, pattern: pattern))
+    }
+
+    @discardableResult
+    static func save(_ rule: ChapterSkipRule) -> Bool {
+        guard isValid(rule) else { return false }
         var current = rules
-        current.append(ChapterSkipRule(kind: .regex, pattern: trimmed))
+        if let index = current.firstIndex(where: { $0.id == rule.id }) {
+            current[index] = rule
+        } else {
+            current.append(rule)
+        }
         rules = current
         return true
     }
@@ -84,6 +86,16 @@ enum ChapterSkipRuleStore {
 
     static func shouldSkip(chapterTitle: String) -> Bool {
         rules.contains { $0.matches(chapterTitle: chapterTitle) }
+    }
+
+    static func isValid(_ rule: ChapterSkipRule) -> Bool {
+        guard !rule.pattern.isEmpty else { return false }
+        switch rule.kind {
+        case .exactTitle:
+            return true
+        case .regex:
+            return (try? NSRegularExpression(pattern: rule.pattern, options: [.caseInsensitive])) != nil
+        }
     }
 
     private static func deduplicated(_ rules: [ChapterSkipRule]) -> [ChapterSkipRule] {

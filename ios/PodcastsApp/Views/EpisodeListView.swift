@@ -369,8 +369,14 @@ class EpisodeListViewController: UITableViewController {
         if player.currentEpisode?.stableID == episode.stableID {
             player.togglePlayPause()
         } else {
-            let start = LibraryStore.playbackPosition(for: episode, in: modelContext)
-            player.play(episode, at: start, artworkURL: LibraryStore.localArtworkURL(for: episode, in: modelContext))
+            Task { [weak self] in
+                guard let self,
+                      let playableEpisode = await LibraryStore.playableDownloadedEpisode(for: episode, in: self.modelContext) else { return }
+                let start = LibraryStore.playbackPosition(for: playableEpisode, in: self.modelContext)
+                self.player.play(playableEpisode, at: start, artworkURL: LibraryStore.localArtworkURL(for: playableEpisode, in: self.modelContext))
+                self.refreshEpisodeStateSets()
+                self.tableView.reloadData()
+            }
         }
     }
 

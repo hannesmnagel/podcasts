@@ -236,12 +236,16 @@ final class EpisodeDetailViewController: UIViewController {
         button.titleLabel?.numberOfLines = 0
         button.addAction(UIAction { [weak self] _ in
             guard let self else { return }
-            player.updateAutoSkipChapters(chapters)
-            player.play(
-                episode,
-                at: chapter.start,
-                artworkURL: LibraryStore.cachedChapterImageURL(for: chapter, episode: episode, in: modelContext) ?? chapter.displayImageURL ?? artworkURL
-            )
+            Task { [weak self] in
+                guard let self,
+                      let playableEpisode = await LibraryStore.playableDownloadedEpisode(for: episode, in: self.modelContext) else { return }
+                self.player.updateAutoSkipChapters(self.chapters)
+                self.player.play(
+                    playableEpisode,
+                    at: chapter.start,
+                    artworkURL: LibraryStore.cachedChapterImageURL(for: chapter, episode: playableEpisode, in: self.modelContext) ?? chapter.displayImageURL ?? self.artworkURL
+                )
+            }
         }, for: .touchUpInside)
         let skipState: UIMenuElement.State = ChapterSkipRuleStore.shouldSkip(chapterTitle: chapter.title) ? .on : .off
         button.menu = UIMenu(children: [
@@ -342,11 +346,16 @@ final class EpisodeDetailViewController: UIViewController {
     @objc private func playEpisode() {
         if player.currentEpisode?.stableID == episode.stableID {
             player.togglePlayPause()
+            updateActionHeader()
         } else {
-            player.updateAutoSkipChapters(chapters)
-            player.play(episode, at: LibraryStore.playbackPosition(for: episode, in: modelContext), artworkURL: artworkURL)
+            Task { [weak self] in
+                guard let self,
+                      let playableEpisode = await LibraryStore.playableDownloadedEpisode(for: self.episode, in: self.modelContext) else { return }
+                self.player.updateAutoSkipChapters(self.chapters)
+                self.player.play(playableEpisode, at: LibraryStore.playbackPosition(for: playableEpisode, in: self.modelContext), artworkURL: self.artworkURL)
+                self.updateActionHeader()
+            }
         }
-        updateActionHeader()
     }
 
     @objc private func togglePlayed() {
@@ -419,7 +428,8 @@ final class EpisodeDetailViewController: UIViewController {
                 text: transcriptText,
                 segments: segments,
                 artworkURL: artworkURL,
-                player: player
+                player: player,
+                modelContext: modelContext
             ),
             animated: true
         )
@@ -436,18 +446,20 @@ private final class TranscriptTextViewController: UIViewController, UITableViewD
     private let segments: [TranscriptSegment]
     private let artworkURL: URL?
     private let player: PlayerController
+    private let modelContext: ModelContext
     private let tableView = UITableView(frame: .zero, style: .plain)
     private var filteredSegments: [TranscriptSegment] = []
     private var currentSegmentStart: TimeInterval?
     private var cancellables: Set<AnyCancellable> = []
 
-    init(episode: EpisodeDTO, text: String, segments: [TranscriptSegment], artworkURL: URL?, player: PlayerController) {
+    init(episode: EpisodeDTO, text: String, segments: [TranscriptSegment], artworkURL: URL?, player: PlayerController, modelContext: ModelContext) {
         self.episode = episode
         self.text = text
         self.segments = segments
         self.filteredSegments = segments
         self.artworkURL = artworkURL
         self.player = player
+        self.modelContext = modelContext
         super.init(nibName: nil, bundle: nil)
         title = "Transcript"
     }
@@ -559,7 +571,11 @@ private final class TranscriptTextViewController: UIViewController, UITableViewD
         if player.currentEpisode?.stableID == episode.stableID {
             player.seek(toTime: start)
         } else {
-            player.play(episode, at: start, artworkURL: artworkURL)
+            Task { [weak self] in
+                guard let self,
+                      let playableEpisode = await LibraryStore.playableDownloadedEpisode(for: self.episode, in: self.modelContext) else { return }
+                self.player.play(playableEpisode, at: start, artworkURL: self.artworkURL)
+            }
         }
     }
 

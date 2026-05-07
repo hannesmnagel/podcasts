@@ -137,10 +137,38 @@ enum LibraryStore {
         guard let remoteURL = URL(string: episode.audioURL) else { return }
         let state = episodeState(for: episode, in: context) ?? makeEpisodeState(for: episode, in: context)
         let progressID = progressID ?? episode.stableID
+        if remoteURL.isFileURL, FileManager.default.fileExists(atPath: remoteURL.path) {
+            state.downloadedFileURL = remoteURL
+            state.isDownloaded = true
+            try? context.save()
+            return
+        }
         if let localURL = try? await LocalMediaCache.cachedOrDownload(remoteURL, progressID: progressID) {
             state.downloadedFileURL = localURL
             state.isDownloaded = true
+            try? context.save()
         }
+    }
+
+    static func playableDownloadedEpisode(for episode: EpisodeDTO, in context: ModelContext, progressID: String? = nil) async -> EpisodeDTO? {
+        if let url = URL(string: episode.audioURL), url.isFileURL, FileManager.default.fileExists(atPath: url.path) {
+            return episode
+        }
+
+        let state = episodeState(for: episode, in: context) ?? makeEpisodeState(for: episode, in: context)
+        if state.isDownloaded,
+           let downloadedFileURL = state.downloadedFileURL,
+           FileManager.default.fileExists(atPath: downloadedFileURL.path) {
+            return state.episodeDTO(preferDownloadedFile: true)
+        }
+
+        await downloadAudio(for: episode, in: context, progressID: progressID)
+        guard state.isDownloaded,
+              let downloadedFileURL = state.downloadedFileURL,
+              FileManager.default.fileExists(atPath: downloadedFileURL.path) else {
+            return nil
+        }
+        return state.episodeDTO(preferDownloadedFile: true)
     }
 
     static func removeDownload(for episode: EpisodeDTO, in context: ModelContext) {

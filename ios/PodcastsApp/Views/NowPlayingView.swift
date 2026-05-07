@@ -208,10 +208,20 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
         remainingLabel.font = .monospacedDigitSystemFont(ofSize: 13, weight: .regular)
         elapsedLabel.textColor = .secondaryLabel
         remainingLabel.textColor = .secondaryLabel
+        [elapsedLabel, remainingLabel].forEach {
+            $0.numberOfLines = 1
+            $0.adjustsFontSizeToFitWidth = true
+            $0.minimumScaleFactor = 0.8
+            $0.setContentCompressionResistancePriority(.required, for: .horizontal)
+            $0.setContentCompressionResistancePriority(.required, for: .vertical)
+        }
 
-        let timeRow = UIStackView(arrangedSubviews: [elapsedLabel, UIView(), remainingLabel])
+        let timeSpacer = UIView()
+        timeSpacer.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let timeRow = UIStackView(arrangedSubviews: [elapsedLabel, timeSpacer, remainingLabel])
         timeRow.translatesAutoresizingMaskIntoConstraints = false
         timeRow.axis = .horizontal
+        timeRow.alignment = .center
 
         let backButton = controlButton(systemName: "gobackward.15", action: #selector(skipBack))
         playButton.tintColor = .systemOrange
@@ -285,24 +295,25 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
             progressRow.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -36),
             progressRow.heightAnchor.constraint(equalToConstant: 44),
             progressHeightConstraint!,
-            timeRow.topAnchor.constraint(equalTo: progressControl.bottomAnchor, constant: 0),
+            timeRow.topAnchor.constraint(equalTo: progressControl.bottomAnchor, constant: 2),
             timeRow.leadingAnchor.constraint(equalTo: progressControl.leadingAnchor),
             timeRow.trailingAnchor.constraint(equalTo: progressControl.trailingAnchor),
+            timeRow.heightAnchor.constraint(greaterThanOrEqualToConstant: 18),
             chapterBackButton.widthAnchor.constraint(equalToConstant: 44),
             chapterBackButton.heightAnchor.constraint(equalToConstant: 44),
             chapterForwardButton.widthAnchor.constraint(equalToConstant: 44),
             chapterForwardButton.heightAnchor.constraint(equalToConstant: 44),
 
-            controls.topAnchor.constraint(equalTo: timeRow.bottomAnchor, constant: 34),
+            controls.topAnchor.constraint(equalTo: timeRow.bottomAnchor, constant: 24),
             controls.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 86),
             controls.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -86),
-            controls.bottomAnchor.constraint(lessThanOrEqualTo: bottom.topAnchor, constant: -22),
+            controls.bottomAnchor.constraint(lessThanOrEqualTo: bottom.topAnchor, constant: -14),
             playButton.widthAnchor.constraint(equalToConstant: 84),
             playButton.heightAnchor.constraint(equalToConstant: 84),
 
             bottom.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 32),
             bottom.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -32),
-            bottom.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -18),
+            bottom.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -6),
             closeGlass.widthAnchor.constraint(equalToConstant: 50),
             closeGlass.heightAnchor.constraint(equalToConstant: 50),
             centerGlass.widthAnchor.constraint(greaterThanOrEqualToConstant: 178),
@@ -315,6 +326,9 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
 
         contentContainer.setContentHuggingPriority(.required, for: .vertical)
         progressControl.setContentCompressionResistancePriority(.required, for: .vertical)
+        timeRow.setContentCompressionResistancePriority(.required, for: .vertical)
+        controls.setContentCompressionResistancePriority(.required, for: .vertical)
+        bottom.setContentCompressionResistancePriority(.required, for: .vertical)
         updateContentMode(animated: false)
     }
 
@@ -607,11 +621,15 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
         button.titleLabel?.numberOfLines = 0
         button.addAction(UIAction { [weak self] _ in
             guard let self else { return }
-            player.play(
-                episode,
-                at: chapter.start,
-                artworkURL: LibraryStore.cachedChapterImageURL(for: chapter, episode: episode, in: modelContext) ?? chapter.displayImageURL ?? currentArtworkURL(for: episode)
-            )
+            Task { [weak self] in
+                guard let self,
+                      let playableEpisode = await LibraryStore.playableDownloadedEpisode(for: episode, in: self.modelContext) else { return }
+                self.player.play(
+                    playableEpisode,
+                    at: chapter.start,
+                    artworkURL: LibraryStore.cachedChapterImageURL(for: chapter, episode: playableEpisode, in: self.modelContext) ?? chapter.displayImageURL ?? self.currentArtworkURL(for: playableEpisode)
+                )
+            }
         }, for: .touchUpInside)
         let skipState: UIMenuElement.State = ChapterSkipRuleStore.shouldSkip(chapterTitle: chapter.title) ? .on : .off
         button.menu = UIMenu(children: [

@@ -64,7 +64,11 @@ final class RootTabController: UITabBarController {
             guard let self else { return }
             LibraryStore.markPlayed(episode, in: self.modelContext)
             guard let nextEpisode = self.nextUnplayedEpisode(after: episode) else { return }
-            self.player.play(nextEpisode, at: 0, artworkURL: LibraryStore.localArtworkURL(for: nextEpisode, in: self.modelContext))
+            Task { [weak self] in
+                guard let self,
+                      let playableEpisode = await LibraryStore.playableDownloadedEpisode(for: nextEpisode, in: self.modelContext) else { return }
+                self.player.play(playableEpisode, at: 0, artworkURL: LibraryStore.localArtworkURL(for: playableEpisode, in: self.modelContext))
+            }
         }
     }
 

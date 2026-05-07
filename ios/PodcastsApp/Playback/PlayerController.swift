@@ -198,10 +198,8 @@ final class PlayerController: ObservableObject {
     }
 
     private func playableURL(for episode: EpisodeDTO) -> URL? {
-        guard let url = URL(string: episode.audioURL) else { return nil }
-        if url.isFileURL, !FileManager.default.fileExists(atPath: url.path) {
-            return nil
-        }
+        guard let url = URL(string: episode.audioURL), url.isFileURL else { return nil }
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
         return url
     }
 

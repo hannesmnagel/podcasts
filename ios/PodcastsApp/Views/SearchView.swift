@@ -352,7 +352,11 @@ final class SearchViewController: UITableViewController, UISearchResultsUpdating
         if player.currentEpisode?.stableID == episode.stableID {
             player.togglePlayPause()
         } else {
-            player.play(episode, at: LibraryStore.playbackPosition(for: episode, in: modelContext), artworkURL: LibraryStore.localArtworkURL(for: episode, in: modelContext))
+            Task { [weak self] in
+                guard let self,
+                      let playableEpisode = await LibraryStore.playableDownloadedEpisode(for: episode, in: self.modelContext) else { return }
+                self.player.play(playableEpisode, at: LibraryStore.playbackPosition(for: playableEpisode, in: self.modelContext), artworkURL: LibraryStore.localArtworkURL(for: playableEpisode, in: self.modelContext))
+            }
         }
     }
 

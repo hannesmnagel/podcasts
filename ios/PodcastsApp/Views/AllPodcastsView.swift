@@ -163,7 +163,7 @@ final class AllPodcastsViewController: UITableViewController, UIDocumentPickerDe
     private func load() {
         var descriptor = FetchDescriptor<PodcastSubscription>(sortBy: [SortDescriptor(\.sortIndex)])
         descriptor.includePendingChanges = true
-        subscriptions = (try? modelContext.fetch(descriptor)) ?? []
+        subscriptions = Self.stablySortedSubscriptions((try? modelContext.fetch(descriptor)) ?? [])
         tableView.reloadData()
         updateEmptyState()
         updateSelectionToolbar()
@@ -185,6 +185,20 @@ final class AllPodcastsViewController: UITableViewController, UIDocumentPickerDe
             guard let podcasts = try? await client.podcasts() else { return }
             LibraryStore.updateExistingSubscriptions(with: podcasts, in: modelContext)
             load()
+        }
+    }
+
+    private static func stablySortedSubscriptions(_ subscriptions: [PodcastSubscription]) -> [PodcastSubscription] {
+        subscriptions.sorted { lhs, rhs in
+            let lhsTitle = lhs.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            let rhsTitle = rhs.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            let lhsKey = lhsTitle.isEmpty ? lhs.feedURL.absoluteString : lhsTitle
+            let rhsKey = rhsTitle.isEmpty ? rhs.feedURL.absoluteString : rhsTitle
+            let titleComparison = lhsKey.localizedStandardCompare(rhsKey)
+            if titleComparison != .orderedSame {
+                return titleComparison == .orderedAscending
+            }
+            return lhs.stableID < rhs.stableID
         }
     }
 

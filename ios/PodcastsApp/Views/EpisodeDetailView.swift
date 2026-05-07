@@ -564,7 +564,7 @@ private final class TranscriptTextViewController: UIViewController, UITableViewD
                 time: segment.start.map(format) ?? segment.originalStart.map { "~\(format($0))" },
                 text: segment.text,
                 isCurrent: segment.start == currentSegmentStart,
-                isUnmatchedFingerprint: segment.isUnmatchedFingerprint
+                isInsertedAudio: segment.isInsertedAudio
             )
         }
         return cell
@@ -573,7 +573,7 @@ private final class TranscriptTextViewController: UIViewController, UITableViewD
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
         guard !segments.isEmpty,
-              !filteredSegments[indexPath.row].isUnmatchedFingerprint,
+              !filteredSegments[indexPath.row].isInsertedAudio,
               let start = filteredSegments[indexPath.row].start else { return }
         if player.currentEpisode?.stableID == episode.stableID {
             player.seek(toTime: start)
@@ -605,18 +605,18 @@ private final class TranscriptSegmentCell: UITableViewCell {
         fatalError("init(coder:) has not been implemented")
     }
 
-    func configure(time: String?, text: String, isCurrent: Bool, isUnmatchedFingerprint: Bool = false) {
+    func configure(time: String?, text: String, isCurrent: Bool, isInsertedAudio: Bool = false) {
         timeLabel.text = time
-        if isUnmatchedFingerprint {
-            transcriptLabel.text = "DAI / unmatched audio\n\(text)"
+        if isInsertedAudio {
+            transcriptLabel.text = "Inserted audio / not in transcript\n\(text)"
         } else {
             transcriptLabel.text = text
         }
-        contentView.backgroundColor = isCurrent ? UIColor.systemOrange.withAlphaComponent(0.18) : (isUnmatchedFingerprint ? UIColor.systemPurple.withAlphaComponent(0.10) : .clear)
-        transcriptLabel.textColor = isCurrent ? .label : (isUnmatchedFingerprint ? .systemPurple : .secondaryLabel)
-        timeLabel.textColor = isCurrent ? .systemOrange : (isUnmatchedFingerprint ? .systemPurple : .tertiaryLabel)
-        accessoryType = isUnmatchedFingerprint ? .none : .disclosureIndicator
-        selectionStyle = isUnmatchedFingerprint ? .none : .default
+        contentView.backgroundColor = isCurrent ? UIColor.systemOrange.withAlphaComponent(0.18) : (isInsertedAudio ? UIColor.systemPurple.withAlphaComponent(0.10) : .clear)
+        transcriptLabel.textColor = isCurrent ? .label : (isInsertedAudio ? .systemPurple : .secondaryLabel)
+        timeLabel.textColor = isCurrent ? .systemOrange : (isInsertedAudio ? .systemPurple : .tertiaryLabel)
+        accessoryType = isInsertedAudio ? .none : .disclosureIndicator
+        selectionStyle = isInsertedAudio ? .none : .default
     }
 
     private func configure() {
@@ -670,8 +670,8 @@ struct TranscriptSegment: Codable, Equatable {
     let originalStart: TimeInterval?
     let originalEnd: TimeInterval?
 
-    var isUnmatchedFingerprint: Bool {
-        alignmentStatus == "unmatchedFingerprint"
+    var isInsertedAudio: Bool {
+        alignmentStatus == "insertedAudio"
     }
 }
 

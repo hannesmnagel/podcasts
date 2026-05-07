@@ -702,7 +702,7 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
             time: segment.start.map(format) ?? segment.originalStart.map { "~\(format($0))" },
             text: segment.text,
             isCurrent: indexPath.row == currentTranscriptSegmentIndex,
-            isUnmatchedFingerprint: segment.isUnmatchedFingerprint
+            isInsertedAudio: segment.isInsertedAudio
         )
         return cell
     }
@@ -710,7 +710,7 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
         guard transcriptSegments.indices.contains(indexPath.row),
-              !transcriptSegments[indexPath.row].isUnmatchedFingerprint,
+              !transcriptSegments[indexPath.row].isInsertedAudio,
               let start = transcriptSegments[indexPath.row].start else { return }
         let previousIndex = currentTranscriptSegmentIndex
         currentTranscriptSegmentIndex = indexPath.row
@@ -1045,14 +1045,14 @@ private final class NowPlayingTranscriptSegmentCell: UITableViewCell {
         fatalError("init(coder:) has not been implemented")
     }
 
-    func configure(time: String?, text: String, isCurrent: Bool, isUnmatchedFingerprint: Bool = false) {
+    func configure(time: String?, text: String, isCurrent: Bool, isInsertedAudio: Bool = false) {
         timeLabel.text = time ?? "--:--"
-        transcriptLabel.text = isUnmatchedFingerprint ? "DAI / unmatched audio\n\(text)" : text
-        container.backgroundColor = isCurrent ? UIColor.systemOrange.withAlphaComponent(0.22) : (isUnmatchedFingerprint ? UIColor.systemPurple.withAlphaComponent(0.12) : .clear)
-        timeLabel.textColor = isCurrent ? .systemOrange : (isUnmatchedFingerprint ? .systemPurple : .tertiaryLabel)
-        transcriptLabel.textColor = isCurrent ? .label : (isUnmatchedFingerprint ? .systemPurple : .secondaryLabel)
+        transcriptLabel.text = isInsertedAudio ? "Inserted audio / not in transcript\n\(text)" : text
+        container.backgroundColor = isCurrent ? UIColor.systemOrange.withAlphaComponent(0.22) : (isInsertedAudio ? UIColor.systemPurple.withAlphaComponent(0.12) : .clear)
+        timeLabel.textColor = isCurrent ? .systemOrange : (isInsertedAudio ? .systemPurple : .tertiaryLabel)
+        transcriptLabel.textColor = isCurrent ? .label : (isInsertedAudio ? .systemPurple : .secondaryLabel)
         transcriptLabel.font = .preferredFont(forTextStyle: .title3)
-        selectionStyle = isUnmatchedFingerprint ? .none : .default
+        selectionStyle = isInsertedAudio ? .none : .default
     }
 }
 

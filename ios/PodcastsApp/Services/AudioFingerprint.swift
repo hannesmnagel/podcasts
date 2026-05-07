@@ -173,33 +173,50 @@ enum TranscriptAligner {
         let localByHash = Dictionary(grouping: localChunks, by: \.hash)
         let globalMatches = uniqueMatches(backendChunks: backendChunks, localByHash: localByHash)
         let segmentFingerprints = decodeSegmentFingerprints(segmentFingerprintsJSON)
-        var aligned: [AlignedTranscriptSegment] = []
+        var matched: [AlignedTranscriptSegment] = []
         var matchedCount = 0
-        var unmatchedCount = 0
 
         for (index, segment) in segments.enumerated() {
-            guard let start = segment.start else {
-                aligned.append(AlignedTranscriptSegment(start: nil, end: nil, text: segment.text, alignmentStatus: nil, originalStart: nil, originalEnd: nil))
-                continue
-            }
+            guard let start = segment.start else { continue }
             let fallbackOffset = offsetNear(start: start, matches: globalMatches, tolerance: backendFingerprint.chunkDuration)
             let segmentOffset = segmentFingerprints[index].flatMap {
                 offset(for: $0, localByHash: localByHash, tolerance: backendFingerprint.chunkDuration, fallbackOffset: fallbackOffset)
             }
-            guard let offset = segmentOffset ?? fallbackOffset else {
-                unmatchedCount += 1
-                aligned.append(AlignedTranscriptSegment(start: nil, end: nil, text: segment.text, alignmentStatus: "unmatchedFingerprint", originalStart: segment.start, originalEnd: segment.end))
-                continue
-            }
+            guard let offset = segmentOffset ?? fallbackOffset else { continue }
             matchedCount += 1
-            aligned.append(AlignedTranscriptSegment(start: max(0, start + offset), end: segment.end.map { max(0, $0 + offset) }, text: segment.text, alignmentStatus: nil, originalStart: segment.start, originalEnd: segment.end))
+            matched.append(AlignedTranscriptSegment(start: max(0, start + offset), end: segment.end.map { max(0, $0 + offset) }, text: segment.text, alignmentStatus: nil, originalStart: segment.start, originalEnd: segment.end))
+        }
+
+        var aligned: [AlignedTranscriptSegment] = []
+        var insertedAudioCount = 0
+        let insertedAudioThreshold = max(8, backendFingerprint.chunkDuration * 2)
+        for segment in matched {
+            if let previous = aligned.last(where: { $0.alignmentStatus == nil }),
+               let previousEnd = previous.end,
+               let currentStart = segment.start {
+                let localGap = currentStart - previousEnd
+                let transcriptGap = max(0, (segment.originalStart ?? currentStart) - (previous.originalEnd ?? previousEnd))
+                let insertedAudioDuration = localGap - transcriptGap
+                if insertedAudioDuration >= insertedAudioThreshold {
+                    insertedAudioCount += 1
+                    aligned.append(AlignedTranscriptSegment(
+                        start: previousEnd,
+                        end: currentStart,
+                        text: "Inserted audio not present in transcript",
+                        alignmentStatus: "insertedAudio",
+                        originalStart: previous.originalEnd,
+                        originalEnd: segment.originalStart
+                    ))
+                }
+            }
+            aligned.append(segment)
         }
 
         // Keep partial alignments instead of invalidating the whole transcript when
         // only some audio windows match the downloaded rendition.
         guard matchedCount >= max(1, min(3, segments.count / 10)) else { return nil }
         let json = String(decoding: (try? JSONEncoder().encode(aligned)) ?? Data(), as: UTF8.self)
-        return TranscriptAlignmentResult(json: json, hasUnmatchedSegments: unmatchedCount > 0)
+        return TranscriptAlignmentResult(json: json, hasUnmatchedSegments: insertedAudioCount > 0)
     }
 
     private static func uniqueMatches(backendChunks: [AudioFingerprintChunk], localByHash: [String: [AudioFingerprintChunk]]) -> [(backend: AudioFingerprintChunk, local: AudioFingerprintChunk)] {

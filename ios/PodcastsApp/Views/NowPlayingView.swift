@@ -470,6 +470,7 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
             String(transcriptText?.hashValue ?? 0),
             String(transcriptSegments.map { "\($0.start ?? -1):\($0.text)" }.joined(separator: "|").hashValue),
             String(chapters.map(\.title).joined(separator: "|").hashValue),
+            String(ChapterSkipRuleStore.rules.map(\.displayTitle).joined(separator: "|").hashValue),
             String((episode.summary ?? "").hashValue)
         ].joined(separator: ":")
         guard cacheKey != swipePanelCacheKey else { return }
@@ -612,6 +613,14 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
                 artworkURL: LibraryStore.cachedChapterImageURL(for: chapter, episode: episode, in: modelContext) ?? chapter.displayImageURL ?? currentArtworkURL(for: episode)
             )
         }, for: .touchUpInside)
+        let skipState: UIMenuElement.State = ChapterSkipRuleStore.shouldSkip(chapterTitle: chapter.title) ? .on : .off
+        button.menu = UIMenu(children: [
+            UIAction(title: "Always Skip ‘\(chapter.title)’", image: UIImage(systemName: "forward.end.fill"), state: skipState) { [weak self] _ in
+                ChapterSkipRuleStore.addExactTitle(chapter.title)
+                self?.swipePanelCacheKey = nil
+                self?.update()
+            }
+        ])
         return button
     }
 
@@ -691,7 +700,7 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
 
     private func makeMenu() -> UIMenu {
         let episodeProvider = { [weak self] in self?.player.currentEpisode }
-        return UIMenu(children: [
+        var children: [UIMenuElement] = [
             UIAction(title: "View Episode Details", image: UIImage(systemName: "info.circle")) { [weak self] _ in
                 guard let episode = episodeProvider() else { return }
                 self?.showEpisodeDetails?(episode)
@@ -712,7 +721,25 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
                 guard let episode = episodeProvider() else { return }
                 self?.showPodcast?(episode)
             }
-        ])
+        ]
+        if let currentTitle = currentChapterTitle() {
+            children.append(UIAction(title: "Always Skip Current Chapter", subtitle: currentTitle, image: UIImage(systemName: "forward.end.fill")) { [weak self] _ in
+                ChapterSkipRuleStore.addExactTitle(currentTitle)
+                self?.swipePanelCacheKey = nil
+                self?.update()
+            })
+        }
+        children.append(UIAction(title: "Add Chapter Skip Regex…", image: UIImage(systemName: "text.magnifyingglass")) { [weak self] _ in
+            self?.showAddChapterSkipRegex()
+        })
+        if !ChapterSkipRuleStore.rules.isEmpty {
+            children.append(UIAction(title: "Clear Chapter Skip Rules", image: UIImage(systemName: "xmark.circle"), attributes: .destructive) { [weak self] _ in
+                ChapterSkipRuleStore.removeAll()
+                self?.swipePanelCacheKey = nil
+                self?.update()
+            })
+        }
+        return UIMenu(children: children)
     }
 
     private func loadCachedArtifacts() {
@@ -721,6 +748,7 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
         transcriptSegments = LibraryStore.cachedTranscriptSegments(for: episode, in: modelContext)
         Task {
             chapters = await preferredChapters(for: episode)
+            player.updateAutoSkipChapters(chapters)
             player.updateNowPlayingArtwork(url: primaryArtworkURL(for: episode))
             update()
         }
@@ -743,6 +771,7 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
         } else {
             chapters = await preferredChapters(for: episode)
         }
+        player.updateAutoSkipChapters(chapters)
         player.updateNowPlayingArtwork(url: primaryArtworkURL(for: episode))
         update()
     }
@@ -853,6 +882,33 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
             alert.addAction(UIAlertAction(title: title, style: .default))
         }
         alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        present(alert, animated: true)
+    }
+
+    private func showAddChapterSkipRegex() {
+        let alert = UIAlertController(title: "Skip Chapter Regex", message: "Skip future chapters whose title matches this regular expression.", preferredStyle: .alert)
+        alert.addTextField { textField in
+            textField.placeholder = "e.g. (?i)ads?|sponsor"
+            textField.autocapitalizationType = .none
+            textField.autocorrectionType = .no
+        }
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        alert.addAction(UIAlertAction(title: "Add", style: .default) { [weak self, weak alert] _ in
+            guard let self,
+                  let pattern = alert?.textFields?.first?.text,
+                  ChapterSkipRuleStore.addRegex(pattern) else {
+                self?.showErrorMessage("Invalid regular expression")
+                return
+            }
+            self.swipePanelCacheKey = nil
+            self.update()
+        })
+        present(alert, animated: true)
+    }
+
+    private func showErrorMessage(_ message: String) {
+        let alert = UIAlertController(title: "Couldn’t Add Rule", message: message, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
         present(alert, animated: true)
     }
 

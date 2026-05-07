@@ -10,6 +10,7 @@
 		0CE58D717AF16B25555B7A6C /* AllPodcastsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E11208B42B85C23F3D8B31EC /* AllPodcastsView.swift */; };
 		11B660BA8BDDF2B15889D181 /* RootTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1045204BCEB2B486E3CADE53 /* RootTabView.swift */; };
 		12842DFED00EE4073329ADD9 /* TimeFormatting.swift in Sources */ = {isa = PBXBuildFile; fileRef = 48E51DE251937E0D9F12CFCD /* TimeFormatting.swift */; };
+		168118ECCED19189E112292B /* ChapterSkipRule.swift in Sources */ = {isa = PBXBuildFile; fileRef = 812BC4D227969BB6B156773E /* ChapterSkipRule.swift */; };
 		1F63293375470AE95C7DAE05 /* LocalEpisodeArtifact.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8DAA77D218624058B59DA03B /* LocalEpisodeArtifact.swift */; };
 		23A4DC844562DFA30339C335 /* LocalMediaCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = EAC297F4693CC713D46ED366 /* LocalMediaCache.swift */; };
 		389954AC698C02A916345AC9 /* Playlist.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E0ED6534E4986F54972EC12 /* Playlist.swift */; };
@@ -49,6 +50,7 @@
 		6F48B7A94CCEC79440025DB3 /* EpisodeDataProcessor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EpisodeDataProcessor.swift; sourceTree = "<group>"; };
 		704BAB4A9425AA0B9C7144F3 /* PodcastSubscription.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PodcastSubscription.swift; sourceTree = "<group>"; };
 		7F2076613D6BD9246738A4E6 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		812BC4D227969BB6B156773E /* ChapterSkipRule.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChapterSkipRule.swift; sourceTree = "<group>"; };
 		8DAA77D218624058B59DA03B /* LocalEpisodeArtifact.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalEpisodeArtifact.swift; sourceTree = "<group>"; };
 		9A1C69FE1408B1115CF6F1C3 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		9D0F13CA5737C5E2735DB4FD /* Podcasts.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Podcasts.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -130,6 +132,7 @@
 		9A40F9152641624419BEB82C /* Models */ = {
 			isa = PBXGroup;
 			children = (
+				812BC4D227969BB6B156773E /* ChapterSkipRule.swift */,
 				8DAA77D218624058B59DA03B /* LocalEpisodeArtifact.swift */,
 				5B8AA770790EC7DA256269FC /* LocalEpisodeState.swift */,
 				5E0ED6534E4986F54972EC12 /* Playlist.swift */,
@@ -233,6 +236,7 @@
 				5C027FBB4C4DC63177A7075F /* ArtifactDataProcessor.swift in Sources */,
 				CCAB1B580940769F80DFBECA /* AudioFingerprint.swift in Sources */,
 				D33149ACB7F6342B1E389034 /* BackendClient.swift in Sources */,
+				168118ECCED19189E112292B /* ChapterSkipRule.swift in Sources */,
 				CF5155921133475FEE365FDF /* DownloadSettings.swift in Sources */,
 				B0C0891C67EF77DA0223693E /* EpisodeDataProcessor.swift in Sources */,
 				C134F9F079F2EA7A181CBBCD /* EpisodeDetailView.swift in Sources */,
@@ -321,7 +325,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 5;
+				CURRENT_PROJECT_VERSION = 6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				INFOPLIST_FILE = ios/PodcastsApp/Info.plist;
 				INFOPLIST_KEY_BackendBaseURL = "https://podcasts.hannesnagel.com";
@@ -346,7 +350,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 5;
+				CURRENT_PROJECT_VERSION = 6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				INFOPLIST_FILE = ios/PodcastsApp/Info.plist;
 				INFOPLIST_KEY_BackendBaseURL = "https://podcasts.hannesnagel.com";

@@ -28,6 +28,9 @@ final class PlayerController: ObservableObject {
     private var itemCancellables: Set<AnyCancellable> = []
     private var artworkTask: Task<Void, Never>?
     private var nowPlayingArtworkURL: URL?
+    private var autoSkipChapters: [EpisodeChapterDTO] = []
+    private var lastAutoSkippedChapterID: String?
+    private var isAutoSkipping = false
 
     init() {
         player.automaticallyWaitsToMinimizeStalling = false
@@ -104,8 +107,18 @@ final class PlayerController: ObservableObject {
     }
 
     func seek(toTime seconds: TimeInterval) {
+        seek(toTime: seconds, resetAutoSkip: true)
+    }
+
+    func updateAutoSkipChapters(_ chapters: [EpisodeChapterDTO]) {
+        autoSkipChapters = chapters.sorted { $0.start < $1.start }
+        lastAutoSkippedChapterID = nil
+    }
+
+    private func seek(toTime seconds: TimeInterval, resetAutoSkip: Bool) {
         let upperBound = duration ?? seconds
         let targetSeconds = max(0, min(upperBound, seconds))
+        if resetAutoSkip { lastAutoSkippedChapterID = nil }
         elapsed = targetSeconds
         player.seek(to: CMTime(seconds: targetSeconds, preferredTimescale: 600)) { [weak self] _ in
             Task { @MainActor in self?.updateNowPlayingPlaybackState() }
@@ -137,7 +150,37 @@ final class PlayerController: ObservableObject {
                 if let itemDuration = self.player.currentItem?.duration.seconds, itemDuration.isFinite, itemDuration > 0 {
                     self.duration = itemDuration
                 }
+                self.autoSkipCurrentChapterIfNeeded()
             }
+        }
+    }
+
+    private func autoSkipCurrentChapterIfNeeded() {
+        guard !isAutoSkipping,
+              player.timeControlStatus == .playing,
+              autoSkipChapters.count > 1,
+              let currentIndex = autoSkipChapters.lastIndex(where: { $0.start <= elapsed }),
+              autoSkipChapters.indices.contains(currentIndex) else {
+            return
+        }
+        let chapter = autoSkipChapters[currentIndex]
+        let nextStart = autoSkipChapters.indices.contains(currentIndex + 1) ? autoSkipChapters[currentIndex + 1].start : (duration ?? chapter.start)
+        guard elapsed >= chapter.start,
+              elapsed < max(chapter.start, nextStart - 0.75),
+              ChapterSkipRuleStore.shouldSkip(chapterTitle: chapter.title),
+              lastAutoSkippedChapterID != chapter.id else {
+            return
+        }
+        lastAutoSkippedChapterID = chapter.id
+        isAutoSkipping = true
+        let target = max(chapter.start, nextStart + 0.05)
+        seek(toTime: target, resetAutoSkip: false)
+        if player.timeControlStatus == .playing {
+            player.playImmediately(atRate: effectiveSpeed)
+        }
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(900))
+            isAutoSkipping = false
         }
     }
 

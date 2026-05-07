@@ -236,12 +236,20 @@ final class EpisodeDetailViewController: UIViewController {
         button.titleLabel?.numberOfLines = 0
         button.addAction(UIAction { [weak self] _ in
             guard let self else { return }
+            player.updateAutoSkipChapters(chapters)
             player.play(
                 episode,
                 at: chapter.start,
                 artworkURL: LibraryStore.cachedChapterImageURL(for: chapter, episode: episode, in: modelContext) ?? chapter.displayImageURL ?? artworkURL
             )
         }, for: .touchUpInside)
+        let skipState: UIMenuElement.State = ChapterSkipRuleStore.shouldSkip(chapterTitle: chapter.title) ? .on : .off
+        button.menu = UIMenu(children: [
+            UIAction(title: "Always Skip ‘\(chapter.title)’", image: UIImage(systemName: "forward.end.fill"), state: skipState) { [weak self] _ in
+                ChapterSkipRuleStore.addExactTitle(chapter.title)
+                self?.rebuildContent()
+            }
+        ])
         return button
     }
 
@@ -335,6 +343,7 @@ final class EpisodeDetailViewController: UIViewController {
         if player.currentEpisode?.stableID == episode.stableID {
             player.togglePlayPause()
         } else {
+            player.updateAutoSkipChapters(chapters)
             player.play(episode, at: LibraryStore.playbackPosition(for: episode, in: modelContext), artworkURL: artworkURL)
         }
         updateActionHeader()

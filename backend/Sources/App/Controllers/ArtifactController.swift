@@ -35,9 +35,9 @@ struct ArtifactController: RouteCollection {
         // transcript exists without a fingerprint, queue a fresh transcript job.
         let wantsTranscript = input.transcript ?? true
         let wantsFingerprint = input.fingerprint ?? false
-        let hasTranscript = try await artifactExists(episodeID: episodeID, kind: "transcript", on: req.db)
+        let hasTranscriptReadyForAlignment = try await transcriptReadyForAlignment(episodeID: episodeID, on: req.db)
         let hasFingerprint = try await artifactExists(episodeID: episodeID, kind: "fingerprint", on: req.db)
-        let needsTranscript = wantsTranscript && !hasTranscript
+        let needsTranscript = wantsTranscript && !hasTranscriptReadyForAlignment
         let needsFingerprint = wantsFingerprint && !hasFingerprint
         if needsTranscript || needsFingerprint {
             try await ensureWorkerJob(episodeID: episodeID, kind: "transcript", priority: demand.transcriptCount * 3 + demand.fingerprintCount + podcastPriorityBoost, on: req.db)
@@ -171,12 +171,20 @@ struct ArtifactController: RouteCollection {
         try await WorkerJob(episodeID: episodeID, kind: kind, priority: priority).save(on: db)
     }
 
+    private func transcriptReadyForAlignment(episodeID: UUID, on db: any Database) async throws -> Bool {
+        guard let transcript = try await TranscriptArtifact.query(on: db)
+            .filter(\.$episode.$id == episodeID)
+            .sort(\.$createdAt, .descending)
+            .first() else {
+            return false
+        }
+        return transcript.segmentFingerprintsJSON?.isEmpty == false
+    }
+
     private func artifactExists(episodeID: UUID, kind: String, on db: any Database) async throws -> Bool {
         switch kind {
         case "transcript":
-            return try await TranscriptArtifact.query(on: db)
-                .filter(\.$episode.$id == episodeID)
-                .first() != nil
+            return try await transcriptReadyForAlignment(episodeID: episodeID, on: db)
         case "fingerprint":
             return try await FingerprintArtifact.query(on: db)
                 .filter(\.$episode.$id == episodeID)

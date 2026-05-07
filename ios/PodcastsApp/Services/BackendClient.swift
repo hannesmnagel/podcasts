@@ -63,6 +63,10 @@ struct BackendClient: Sendable {
         try await get("episodes/\(episodeID)/transcript")
     }
 
+    func transcriptVersion(for episodeID: String) async throws -> TranscriptVersionDTO {
+        try await get("episodes/\(episodeID)/transcript-version")
+    }
+
     func fingerprint(for episodeID: String) async throws -> AudioFingerprintDTO {
         try await get("episodes/\(episodeID)/fingerprint")
     }
@@ -206,6 +210,15 @@ struct TranscriptArtifactDTO: Codable, Hashable, Sendable {
     let segmentFingerprintsJSON: String?
     let textHash: String
     let renditionID: String?
+}
+
+struct TranscriptVersionDTO: Codable, Hashable, Sendable {
+    let id: UUID?
+    let textHash: String
+    let renditionID: String?
+    let model: String
+    let hasSegmentFingerprints: Bool
+    let createdAt: Date?
 }
 
 struct ChapterArtifactDTO: Codable, Hashable, Sendable {

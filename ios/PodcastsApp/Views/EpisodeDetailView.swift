@@ -42,7 +42,7 @@ final class EpisodeDetailViewController: UIViewController {
         configureActionHeader()
         rebuildContent()
         loadCachedArtifacts()
-        Task { await requestTranscript() }
+        Task { await refreshTranscriptIfNeeded() }
     }
 
     override func viewWillAppear(_ animated: Bool) {
@@ -301,12 +301,41 @@ final class EpisodeDetailViewController: UIViewController {
         }
     }
 
+    private func refreshTranscriptIfNeeded() async {
+        let cachedVersion = LibraryStore.cachedTranscriptVersion(for: episode, in: modelContext)
+        if cachedVersion == nil {
+            await requestTranscriptFromServer(showLoading: true)
+            return
+        }
+
+        do {
+            let remoteVersion = try await client.transcriptVersion(for: episode.stableID)
+            if cachedVersion?.isCurrent(comparedTo: remoteVersion) == false {
+                await requestTranscriptFromServer(showLoading: false)
+            }
+        } catch BackendError.notFound {
+            _ = try? await client.requestArtifacts(for: episode.stableID)
+        } catch {
+            // Keep the offline transcript visible if the freshness check fails.
+        }
+
+        await refreshChaptersIfAvailable()
+    }
+
     private func requestTranscript() async {
-        isLoadingTranscript = true
-        rebuildContent()
-        defer {
-            isLoadingTranscript = false
+        await requestTranscriptFromServer(showLoading: true)
+    }
+
+    private func requestTranscriptFromServer(showLoading: Bool) async {
+        if showLoading {
+            isLoadingTranscript = true
             rebuildContent()
+        }
+        defer {
+            if showLoading {
+                isLoadingTranscript = false
+                rebuildContent()
+            }
         }
         do {
             _ = try await client.requestArtifacts(for: episode.stableID)
@@ -321,16 +350,23 @@ final class EpisodeDetailViewController: UIViewController {
             } catch BackendError.notFound {
                 transcriptText = LibraryStore.cachedTranscriptText(for: episode, in: modelContext)
             }
-            do {
-                let artifact = try await client.chapters(for: episode.stableID)
-                LibraryStore.cacheChapters(artifact, for: episode, in: modelContext)
-                chapters = await preferredChapters()
-            } catch BackendError.notFound {
-                chapters = await preferredChapters()
-            }
+            await refreshChaptersIfAvailable()
         } catch {
-            showError(error)
+            if transcriptText == nil { showError(error) }
         }
+    }
+
+    private func refreshChaptersIfAvailable() async {
+        do {
+            let artifact = try await client.chapters(for: episode.stableID)
+            LibraryStore.cacheChapters(artifact, for: episode, in: modelContext)
+            chapters = await preferredChapters()
+        } catch BackendError.notFound {
+            chapters = await preferredChapters()
+        } catch {
+            chapters = await preferredChapters()
+        }
+        rebuildContent()
     }
 
     private func preferredChapters() async -> [EpisodeChapterDTO] {

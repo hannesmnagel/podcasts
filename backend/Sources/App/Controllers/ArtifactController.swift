@@ -8,6 +8,7 @@ struct ArtifactController: RouteCollection {
         let episodes = routes.grouped("episodes", ":id")
         episodes.post("artifact-requests", use: requestArtifacts)
         episodes.get("transcript", use: transcript)
+        episodes.get("transcript-version", use: transcriptVersion)
         episodes.get("fingerprint", use: fingerprint)
         episodes.get("chapters", use: chapters)
         episodes.post("transcript", use: uploadTranscript)
@@ -84,6 +85,24 @@ struct ArtifactController: RouteCollection {
             throw Abort(.notFound)
         }
         return artifact
+    }
+
+    func transcriptVersion(req: Request) async throws -> TranscriptVersionResponse {
+        let episode = try await findEpisode(req)
+        guard let artifact = try await TranscriptArtifact.query(on: req.db)
+            .filter(\.$episode.$id == episode.requireID())
+            .sort(\.$createdAt, .descending)
+            .first() else {
+            throw Abort(.notFound)
+        }
+        return TranscriptVersionResponse(
+            id: artifact.id,
+            textHash: artifact.textHash,
+            renditionID: artifact.renditionID,
+            model: artifact.model,
+            hasSegmentFingerprints: artifact.segmentFingerprintsJSON?.isEmpty == false,
+            createdAt: artifact.createdAt
+        )
     }
 
     func fingerprint(req: Request) async throws -> FingerprintArtifact {
@@ -240,4 +259,14 @@ struct FingerprintUpload: Content {
 struct ChaptersUpload: Content {
     let source: String
     let chaptersJSON: String
+}
+
+
+struct TranscriptVersionResponse: Content {
+    let id: UUID?
+    let textHash: String
+    let renditionID: String?
+    let model: String
+    let hasSegmentFingerprints: Bool
+    let createdAt: Date?
 }

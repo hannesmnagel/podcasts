@@ -383,6 +383,17 @@ enum LibraryStore {
         artifact(for: episode, in: context)?.transcriptText
     }
 
+    static func cachedTranscriptVersion(for episode: EpisodeDTO, in context: ModelContext) -> LocalTranscriptVersion? {
+        guard let artifact = artifact(for: episode, in: context),
+              let textHash = artifact.transcriptTextHash else { return nil }
+        return LocalTranscriptVersion(
+            textHash: textHash,
+            renditionID: artifact.transcriptRenditionID,
+            model: artifact.transcriptModel,
+            hasSegmentFingerprints: artifact.transcriptSegmentFingerprintsJSON?.isEmpty == false
+        )
+    }
+
     static func cachedTranscriptSegments(for episode: EpisodeDTO, in context: ModelContext) -> [TranscriptSegment] {
         guard let artifact = artifact(for: episode, in: context),
               let segmentsJSON = artifact.alignedTranscriptSegmentsJSON ?? artifact.transcriptSegmentsJSON else { return [] }
@@ -427,6 +438,7 @@ enum LibraryStore {
         artifact.alignmentSourceAudioHash = nil
         artifact.alignmentHasUnmatchedSegments = false
         artifact.updatedAt = .now
+        try? context.save()
     }
 
     static func cacheFingerprint(_ fingerprint: AudioFingerprintDTO, for episode: EpisodeDTO, in context: ModelContext) {
@@ -584,5 +596,19 @@ private extension LocalEpisodeState {
             publishedAt: publishedAt,
             duration: duration
         )
+    }
+}
+
+
+struct LocalTranscriptVersion: Hashable {
+    let textHash: String
+    let renditionID: String?
+    let model: String?
+    let hasSegmentFingerprints: Bool
+
+    func isCurrent(comparedTo remote: TranscriptVersionDTO) -> Bool {
+        textHash == remote.textHash
+            && renditionID == remote.renditionID
+            && hasSegmentFingerprints == remote.hasSegmentFingerprints
     }
 }

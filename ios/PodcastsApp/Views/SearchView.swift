@@ -224,7 +224,8 @@ final class SearchViewController: UITableViewController, UISearchResultsUpdating
         updateRows()
 
         do {
-            let podcast = await client.hydratedPodcast(afterAdding: try await client.addPodcast(feedURL: url))
+            let added = try await client.addPodcast(feedURL: url)
+            let podcast = await client.hydratedPodcast(afterAdding: added)
             LibraryStore.subscribe(to: podcast, in: modelContext)
             loadSubscriptions()
         } catch {
@@ -257,7 +258,8 @@ final class SearchViewController: UITableViewController, UISearchResultsUpdating
         loadSubscriptions()
 
         do {
-            let addedPodcast = await client.hydratedPodcast(afterAdding: try await client.addPodcast(feedURL: url))
+            let added = try await client.addPodcast(feedURL: url)
+            let addedPodcast = await client.hydratedPodcast(afterAdding: added)
             LibraryStore.subscribe(to: addedPodcast, in: modelContext)
             loadSubscriptions()
             await search(query.trimmingCharacters(in: .whitespacesAndNewlines))

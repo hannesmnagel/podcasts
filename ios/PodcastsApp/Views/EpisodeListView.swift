@@ -26,6 +26,7 @@ class EpisodeListViewController: UITableViewController {
     private var navigationDownloadProgressCancellable: AnyCancellable?
     private var hasDownloadButtonInNavigation = false
     private var isLoading = false
+    private var isWaitingForInitialCrawl = false
 
     init(title: String, mode: EpisodeListMode, modelContext: ModelContext, player: PlayerController) {
         self.mode = mode
@@ -322,8 +323,11 @@ class EpisodeListViewController: UITableViewController {
             return
         }
         isLoading = true
+        isWaitingForInitialCrawl = visibleEpisodeSnapshot.isEmpty && isPodcastMode
+        updateEmptyState()
         defer {
             isLoading = false
+            isWaitingForInitialCrawl = false
             refreshControl?.endRefreshing()
             updateEmptyState()
         }
@@ -347,6 +351,18 @@ class EpisodeListViewController: UITableViewController {
             updateSelectionToolbar()
             configureNavigationItems()
             await applyDownloadPolicyIfNeeded()
+        } catch BackendError.notFound where isPodcastMode {
+            episodes = LibraryStore.localEpisodes(forPodcastIDs: podcastModeIDs, in: modelContext)
+            refreshEpisodeStateSets()
+            refreshVisibleEpisodeSnapshot()
+            tableView.reloadData()
+            updateSelectionToolbar()
+        } catch BackendError.server(let status, _) where isPodcastMode && status == 502 {
+            episodes = LibraryStore.localEpisodes(forPodcastIDs: podcastModeIDs, in: modelContext)
+            refreshEpisodeStateSets()
+            refreshVisibleEpisodeSnapshot()
+            tableView.reloadData()
+            updateSelectionToolbar()
         } catch {
             showError(error)
         }
@@ -458,6 +474,32 @@ class EpisodeListViewController: UITableViewController {
             tableView.backgroundView = nil
             return
         }
+
+        if isWaitingForInitialCrawl {
+            let indicator = UIActivityIndicatorView(style: .medium)
+            indicator.startAnimating()
+            let title = UILabel()
+            title.text = "Loading episodes…"
+            title.font = .preferredFont(forTextStyle: .headline)
+            title.textAlignment = .center
+            title.adjustsFontForContentSizeCategory = true
+            let detail = UILabel()
+            detail.text = "The feed is being crawled. Pull to refresh in a moment."
+            detail.font = .preferredFont(forTextStyle: .footnote)
+            detail.textColor = .secondaryLabel
+            detail.textAlignment = .center
+            detail.numberOfLines = 0
+            detail.adjustsFontForContentSizeCategory = true
+            let stack = UIStackView(arrangedSubviews: [indicator, title, detail])
+            stack.axis = .vertical
+            stack.alignment = .center
+            stack.spacing = 10
+            stack.isLayoutMarginsRelativeArrangement = true
+            stack.layoutMargins = UIEdgeInsets(top: 24, left: 32, bottom: 24, right: 32)
+            tableView.backgroundView = stack
+            return
+        }
+
         let label = UILabel()
         label.text = emptyText
         label.textAlignment = .center
@@ -671,6 +713,16 @@ class EpisodeListViewController: UITableViewController {
         guard let subscription else { return }
         LibraryStore.unsubscribe(subscription, in: modelContext)
         navigationController?.popViewController(animated: true)
+    }
+
+    private var isPodcastMode: Bool {
+        if case .podcast = mode { return true }
+        return false
+    }
+
+    private var podcastModeIDs: [String] {
+        if case .podcast(let podcastID) = mode { return [podcastID] }
+        return []
     }
 
     private var emptyText: String {

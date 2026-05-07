@@ -23,6 +23,7 @@ class EpisodeListViewController: UITableViewController {
     private var summarySnippets: [String: String] = [:]
     private let podcastHeaderView = PodcastDetailHeaderView()
     private var downloadProgressCancellable: AnyCancellable?
+    private var navigationDownloadProgressCancellable: AnyCancellable?
     private var isLoading = false
 
     init(title: String, mode: EpisodeListMode, modelContext: ModelContext, player: PlayerController) {
@@ -48,6 +49,7 @@ class EpisodeListViewController: UITableViewController {
         tableView.separatorInset = UIEdgeInsets(top: 0, left: 100, bottom: 0, right: 0)
         tableView.allowsMultipleSelectionDuringEditing = true
         configureNavigationItems()
+        bindDownloadProgressNavigationItem()
         configurePodcastHeaderIfNeeded()
         updateSelectionToolbar()
         refreshControl = UIRefreshControl()
@@ -188,13 +190,44 @@ class EpisodeListViewController: UITableViewController {
         })
     }
 
-    private func configureNavigationItems() {
-        switch mode {
-        case .podcast:
-            navigationItem.rightBarButtonItems = [editButtonItem, UIBarButtonItem(image: UIImage(systemName: "ellipsis.circle"), menu: podcastOptionsMenu())]
-        default:
-            navigationItem.rightBarButtonItem = editButtonItem
+    func configureNavigationItems() {
+        var items: [UIBarButtonItem] = [editButtonItem]
+        items.append(contentsOf: additionalRightBarButtonItems())
+        if hasVisibleDownloadProgress {
+            items.append(UIBarButtonItem(image: UIImage(systemName: "arrow.down.circle.fill"), primaryAction: UIAction { [weak self] _ in
+                self?.showDownloadsSheet()
+            }))
+            items.last?.accessibilityLabel = "Downloads"
         }
+        if case .podcast = mode {
+            items.append(UIBarButtonItem(image: UIImage(systemName: "ellipsis.circle"), menu: podcastOptionsMenu()))
+        }
+        navigationItem.rightBarButtonItems = items.reversed()
+    }
+
+    func additionalRightBarButtonItems() -> [UIBarButtonItem] { [] }
+
+    private var hasVisibleDownloadProgress: Bool {
+        DownloadProgressCenter.shared.progresses.values.contains { !$0.isFinished }
+    }
+
+    private func bindDownloadProgressNavigationItem() {
+        navigationDownloadProgressCancellable = DownloadProgressCenter.shared.$progresses
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.configureNavigationItems()
+            }
+    }
+
+    private func showDownloadsSheet() {
+        let controller = UINavigationController(rootViewController: DownloadProgressListViewController())
+        controller.modalPresentationStyle = .pageSheet
+        if let sheet = controller.sheetPresentationController {
+            sheet.detents = [.medium(), .large()]
+            sheet.prefersGrabberVisible = true
+            sheet.preferredCornerRadius = 28
+        }
+        present(controller, animated: true)
     }
 
     private func podcastOptionsMenu() -> UIMenu {
@@ -473,10 +506,9 @@ class EpisodeListViewController: UITableViewController {
 
     @objc private func downloadSelected() {
         let episodes = selectedEpisodes
-        showProgressFooter(for: "selection")
         Task {
             for episode in episodes {
-                await LibraryStore.downloadAudio(for: episode, in: modelContext, progressID: "selection")
+                await LibraryStore.downloadAudio(for: episode, in: modelContext)
                 await Task.yield()
             }
             refreshEpisodeStateSets()
@@ -511,10 +543,9 @@ class EpisodeListViewController: UITableViewController {
 
     private func downloadAllVisible() {
         let targets = visibleEpisodeSnapshot
-        showProgressFooter(for: "podcast-all")
         Task {
             for episode in targets {
-                await LibraryStore.downloadAudio(for: episode, in: modelContext, progressID: "podcast-all")
+                await LibraryStore.downloadAudio(for: episode, in: modelContext)
                 await Task.yield()
             }
             refreshEpisodeStateSets()

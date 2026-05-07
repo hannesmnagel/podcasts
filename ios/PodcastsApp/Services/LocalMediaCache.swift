@@ -3,6 +3,7 @@ import Combine
 
 struct DownloadProgress: Sendable {
     let id: String
+    let title: String?
     let fractionCompleted: Double
     let completedBytes: Int64
     let totalBytes: Int64?
@@ -21,11 +22,25 @@ final class DownloadProgressCenter {
 
     private init() {}
 
+    func begin(id: String, title: String?) {
+        guard progresses[id] == nil else { return }
+        progresses[id] = DownloadProgress(
+            id: id,
+            title: title,
+            fractionCompleted: 0,
+            completedBytes: 0,
+            totalBytes: nil,
+            isFinished: false
+        )
+    }
+
     func update(id: String, completedBytes: Int64, totalBytes: Int64?) {
         let total = totalBytes.flatMap { $0 > 0 ? $0 : nil }
         let fraction = total.map { min(1, max(0, Double(completedBytes) / Double($0))) } ?? 0
+        let current = progresses[id]
         progresses[id] = DownloadProgress(
             id: id,
+            title: current?.title,
             fractionCompleted: fraction,
             completedBytes: completedBytes,
             totalBytes: total,
@@ -37,6 +52,7 @@ final class DownloadProgressCenter {
         let current = progresses[id]
         progresses[id] = DownloadProgress(
             id: id,
+            title: current?.title,
             fractionCompleted: 1,
             completedBytes: current?.completedBytes ?? current?.totalBytes ?? 0,
             totalBytes: current?.totalBytes,

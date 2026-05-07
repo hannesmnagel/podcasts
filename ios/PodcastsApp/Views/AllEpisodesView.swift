@@ -18,9 +18,13 @@ final class AllEpisodesViewController: EpisodeListViewController {
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         reload(mode: .subscriptions(Self.subscriptionIDs(in: modelContext)))
-        navigationItem.rightBarButtonItem = UIBarButtonItem(systemItem: .refresh, primaryAction: UIAction { [weak self] _ in
+        configureNavigationItems()
+    }
+
+    override func additionalRightBarButtonItems() -> [UIBarButtonItem] {
+        [UIBarButtonItem(systemItem: .refresh, primaryAction: UIAction { [weak self] _ in
             self?.refreshFromSubscriptions()
-        })
+        })]
     }
 
     func openEpisode(_ episode: EpisodeDTO) {

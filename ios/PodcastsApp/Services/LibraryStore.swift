@@ -137,6 +137,7 @@ enum LibraryStore {
         guard let remoteURL = URL(string: episode.audioURL) else { return }
         let state = episodeState(for: episode, in: context) ?? makeEpisodeState(for: episode, in: context)
         let progressID = progressID ?? episode.stableID
+        await DownloadProgressCenter.shared.begin(id: progressID, title: episode.title)
         if remoteURL.isFileURL, FileManager.default.fileExists(atPath: remoteURL.path) {
             state.downloadedFileURL = remoteURL
             state.isDownloaded = true

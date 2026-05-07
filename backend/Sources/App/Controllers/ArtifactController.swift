@@ -117,6 +117,7 @@ struct ArtifactController: RouteCollection {
         artifact.locale = input.locale
         artifact.model = input.model
         artifact.segmentsJSON = input.segmentsJSON
+        artifact.segmentFingerprintsJSON = input.segmentFingerprintsJSON
         artifact.textHash = input.textHash
         try await artifact.save(on: req.db)
         if let fingerprint = input.fingerprint {
@@ -215,6 +216,7 @@ struct TranscriptUpload: Content {
     let locale: String
     let model: String
     let segmentsJSON: String
+    let segmentFingerprintsJSON: String?
     let textHash: String
     let fingerprint: FingerprintUpload?
 }

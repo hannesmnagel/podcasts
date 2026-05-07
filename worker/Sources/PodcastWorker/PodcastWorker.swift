@@ -123,6 +123,7 @@ struct JobProcessor {
                 locale: whisper.language ?? "unknown",
                 model: whisper.model,
                 segmentsJSON: whisper.segmentsJSON,
+                segmentFingerprintsJSON: SegmentFingerprintMaker.segmentFingerprintsJSON(transcriptSegmentsJSON: whisper.segmentsJSON, fingerprint: fingerprint),
                 textHash: whisper.text.stableHash,
                 fingerprint: fingerprint
             )
@@ -132,7 +133,7 @@ struct JobProcessor {
         let segment = TranscriptSegment(start: 0, end: nil, text: "Transcript requested for \(episode.title). Local transcription is not configured yet.")
         let data = try JSONEncoder().encode([segment])
         let segmentsJSON = String(decoding: data, as: UTF8.self)
-        return TranscriptUploadDTO(renditionID: fingerprint?.renditionID, locale: "unknown", model: "stub", segmentsJSON: segmentsJSON, textHash: segmentsJSON.stableHash, fingerprint: fingerprint)
+        return TranscriptUploadDTO(renditionID: fingerprint?.renditionID, locale: "unknown", model: "stub", segmentsJSON: segmentsJSON, segmentFingerprintsJSON: SegmentFingerprintMaker.segmentFingerprintsJSON(transcriptSegmentsJSON: segmentsJSON, fingerprint: fingerprint), textHash: segmentsJSON.stableHash, fingerprint: fingerprint)
     }
 
     private func makeChapters(for episode: EpisodeDTO) async throws -> ChaptersUploadDTO {
@@ -338,6 +339,7 @@ struct TranscriptUploadDTO: Codable {
     let locale: String
     let model: String
     let segmentsJSON: String
+    let segmentFingerprintsJSON: String?
     let textHash: String
     let fingerprint: AudioFingerprint?
 }
@@ -350,6 +352,7 @@ struct ChaptersUploadDTO: Codable {
 struct TranscriptArtifactDTO: Codable {
     let id: UUID?
     let segmentsJSON: String
+    let segmentFingerprintsJSON: String?
 }
 struct ChapterArtifactDTO: Codable { let id: UUID? }
 

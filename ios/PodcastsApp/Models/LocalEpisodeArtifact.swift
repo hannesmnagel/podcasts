@@ -10,6 +10,7 @@ final class LocalEpisodeArtifact {
     var transcriptModel: String?
     var transcriptTextHash: String?
     var transcriptRenditionID: String?
+    var transcriptSegmentFingerprintsJSON: String?
     var alignedTranscriptSegmentsJSON: String?
     var alignmentSourceAudioHash: String?
     var fingerprintAlgorithm: String?

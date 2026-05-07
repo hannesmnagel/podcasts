@@ -10,6 +10,7 @@ final class TranscriptArtifact: Model, Content, @unchecked Sendable {
     @Field(key: "locale") var locale: String
     @Field(key: "model") var model: String
     @Field(key: "segments_json") var segmentsJSON: String
+    @OptionalField(key: "segment_fingerprints_json") var segmentFingerprintsJSON: String?
     @Field(key: "text_hash") var textHash: String
     @Timestamp(key: "created_at", on: .create) var createdAt: Date?
 

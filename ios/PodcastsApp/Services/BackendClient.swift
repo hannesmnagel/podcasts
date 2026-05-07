@@ -201,6 +201,7 @@ struct TranscriptArtifactDTO: Codable, Hashable, Sendable {
     let locale: String
     let model: String
     let segmentsJSON: String
+    let segmentFingerprintsJSON: String?
     let textHash: String
     let renditionID: String?
 }

@@ -134,8 +134,21 @@ enum AudioFingerprintMaker {
     }
 }
 
+struct TranscriptSegmentFingerprintChunk: Codable, Hashable, Sendable {
+    let start: TimeInterval
+    let hash: String
+}
+
+struct TranscriptSegmentFingerprint: Codable, Hashable, Sendable {
+    let index: Int
+    let start: TimeInterval?
+    let end: TimeInterval?
+    let textHash: String
+    let chunks: [TranscriptSegmentFingerprintChunk]
+}
+
 enum TranscriptAligner {
-    static func alignedSegmentsJSON(transcriptSegmentsJSON: String, backendFingerprint: AudioFingerprintDTO, localFingerprint: AudioFingerprintUpload) -> String? {
+    static func alignedSegmentsJSON(transcriptSegmentsJSON: String, segmentFingerprintsJSON: String?, backendFingerprint: AudioFingerprintDTO, localFingerprint: AudioFingerprintUpload) -> String? {
         guard backendFingerprint.algorithm == AudioFingerprintMaker.algorithm,
               backendFingerprint.algorithm == localFingerprint.algorithm,
               let transcriptData = transcriptSegmentsJSON.data(using: .utf8),
@@ -153,24 +166,56 @@ enum TranscriptAligner {
         }
 
         let localByHash = Dictionary(grouping: localChunks, by: \.hash)
-        let matches = backendChunks.compactMap { backendChunk -> (backend: AudioFingerprintChunk, local: AudioFingerprintChunk)? in
+        let globalMatches = uniqueMatches(backendChunks: backendChunks, localByHash: localByHash)
+        let segmentFingerprints = decodeSegmentFingerprints(segmentFingerprintsJSON)
+        var aligned: [AlignedTranscriptSegment] = []
+
+        for (index, segment) in segments.enumerated() {
+            guard let start = segment.start else { continue }
+            let segmentOffset = segmentFingerprints[index].flatMap { offset(for: $0, localByHash: localByHash) }
+            let fallbackOffset = offsetNear(start: start, matches: globalMatches, tolerance: backendFingerprint.chunkDuration)
+            guard let offset = segmentOffset ?? fallbackOffset else { continue }
+            aligned.append(AlignedTranscriptSegment(start: max(0, start + offset), end: segment.end.map { max(0, $0 + offset) }, text: segment.text))
+        }
+
+        // Keep partial alignments instead of invalidating the whole transcript when
+        // only some audio windows match the downloaded rendition.
+        guard aligned.count >= max(1, min(3, segments.count / 10)) else { return nil }
+        return String(decoding: (try? JSONEncoder().encode(aligned)) ?? Data(), as: UTF8.self)
+    }
+
+    private static func uniqueMatches(backendChunks: [AudioFingerprintChunk], localByHash: [String: [AudioFingerprintChunk]]) -> [(backend: AudioFingerprintChunk, local: AudioFingerprintChunk)] {
+        backendChunks.compactMap { backendChunk in
             guard let candidates = localByHash[backendChunk.hash], candidates.count == 1 else { return nil }
             return (backendChunk, candidates[0])
         }
-        guard matches.count >= 3 else { return nil }
+    }
 
-        var aligned: [AlignedTranscriptSegment] = []
-        for segment in segments {
-            guard let start = segment.start else { continue }
-            let match = matches.min { lhs, rhs in
-                abs(lhs.backend.start - start) < abs(rhs.backend.start - start)
-            }
-            guard let match, abs(match.backend.start - start) <= backendFingerprint.chunkDuration else { continue }
-            let offset = match.local.start - match.backend.start
-            aligned.append(AlignedTranscriptSegment(start: max(0, (segment.start ?? 0) + offset), end: segment.end.map { max(0, $0 + offset) }, text: segment.text))
+    private static func offsetNear(start: TimeInterval, matches: [(backend: AudioFingerprintChunk, local: AudioFingerprintChunk)], tolerance: TimeInterval) -> TimeInterval? {
+        guard matches.count >= 3,
+              let match = matches.min(by: { abs($0.backend.start - start) < abs($1.backend.start - start) }),
+              abs(match.backend.start - start) <= tolerance else {
+            return nil
         }
-        guard !aligned.isEmpty else { return nil }
-        return String(decoding: (try? JSONEncoder().encode(aligned)) ?? Data(), as: UTF8.self)
+        return match.local.start - match.backend.start
+    }
+
+    private static func offset(for segment: TranscriptSegmentFingerprint, localByHash: [String: [AudioFingerprintChunk]]) -> TimeInterval? {
+        guard segment.start != nil else { return nil }
+        let offsets = segment.chunks.compactMap { chunk -> TimeInterval? in
+            guard let candidates = localByHash[chunk.hash], candidates.count == 1 else { return nil }
+            return candidates[0].start - chunk.start
+        }.sorted()
+        guard !offsets.isEmpty else { return nil }
+        return offsets[offsets.count / 2]
+    }
+
+    private static func decodeSegmentFingerprints(_ json: String?) -> [Int: TranscriptSegmentFingerprint] {
+        guard let data = json?.data(using: .utf8),
+              let fingerprints = try? JSONDecoder().decode([TranscriptSegmentFingerprint].self, from: data) else {
+            return [:]
+        }
+        return Dictionary(uniqueKeysWithValues: fingerprints.map { ($0.index, $0) })
     }
 }
 

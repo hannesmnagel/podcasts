@@ -17,6 +17,49 @@ struct AudioFingerprintChunk: Codable, Hashable {
     let profile: [UInt8]
 }
 
+struct TranscriptSegmentFingerprintChunk: Codable, Hashable {
+    let start: TimeInterval
+    let hash: String
+}
+
+struct TranscriptSegmentFingerprint: Codable, Hashable {
+    let index: Int
+    let start: TimeInterval?
+    let end: TimeInterval?
+    let textHash: String
+    let chunks: [TranscriptSegmentFingerprintChunk]
+}
+
+enum SegmentFingerprintMaker {
+    static func segmentFingerprintsJSON(transcriptSegmentsJSON: String, fingerprint: AudioFingerprint?) -> String? {
+        guard let fingerprint,
+              let segmentData = transcriptSegmentsJSON.data(using: .utf8),
+              let chunkData = fingerprint.chunksJSON.data(using: .utf8),
+              let segments = try? JSONDecoder().decode([TranscriptSegment].self, from: segmentData),
+              let chunks = try? JSONDecoder().decode([AudioFingerprintChunk].self, from: chunkData),
+              !segments.isEmpty, !chunks.isEmpty else {
+            return nil
+        }
+        let segmentFingerprints = segments.enumerated().map { index, segment in
+            let segmentChunks = fingerprintChunks(for: segment, chunks: chunks, chunkDuration: fingerprint.chunkDuration)
+            return TranscriptSegmentFingerprint(index: index, start: segment.start, end: segment.end, textHash: segment.text.stableHash, chunks: segmentChunks)
+        }
+        guard let data = try? JSONEncoder().encode(segmentFingerprints) else { return nil }
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    private static func fingerprintChunks(for segment: TranscriptSegment, chunks: [AudioFingerprintChunk], chunkDuration: TimeInterval) -> [TranscriptSegmentFingerprintChunk] {
+        guard let start = segment.start else { return [] }
+        let end = max(segment.end ?? (start + chunkDuration), start + 0.25)
+        return chunks
+            .filter { chunk in
+                let chunkEnd = chunk.start + chunk.duration
+                return chunk.start < end && chunkEnd > start
+            }
+            .map { TranscriptSegmentFingerprintChunk(start: $0.start, hash: $0.hash) }
+    }
+}
+
 enum AudioFingerprintMaker {
     static let algorithm = "podcatcher-rms-v1"
     static let sampleRate: Double = 8_000

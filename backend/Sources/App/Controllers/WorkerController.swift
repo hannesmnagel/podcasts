@@ -14,6 +14,7 @@ struct WorkerController: RouteCollection {
         for _ in 0..<3 {
             guard let candidate = try await WorkerJob.query(on: req.db)
                 .filter(\.$status == "pending")
+                .filter(\.$kind == "transcript")
                 .sort(\.$priority, .descending)
                 .sort(\.$createdAt, .ascending)
                 .first() else { throw Abort(.noContent) }

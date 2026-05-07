@@ -147,8 +147,13 @@ struct TranscriptSegmentFingerprint: Codable, Hashable, Sendable {
     let chunks: [TranscriptSegmentFingerprintChunk]
 }
 
+struct TranscriptAlignmentResult {
+    let json: String
+    let hasUnmatchedSegments: Bool
+}
+
 enum TranscriptAligner {
-    static func alignedSegmentsJSON(transcriptSegmentsJSON: String, segmentFingerprintsJSON: String?, backendFingerprint: AudioFingerprintDTO, localFingerprint: AudioFingerprintUpload) -> String? {
+    static func alignedSegmentsJSON(transcriptSegmentsJSON: String, segmentFingerprintsJSON: String?, backendFingerprint: AudioFingerprintDTO, localFingerprint: AudioFingerprintUpload) -> TranscriptAlignmentResult? {
         guard backendFingerprint.algorithm == AudioFingerprintMaker.algorithm,
               backendFingerprint.algorithm == localFingerprint.algorithm,
               let transcriptData = transcriptSegmentsJSON.data(using: .utf8),
@@ -162,28 +167,39 @@ enum TranscriptAligner {
         }
 
         if backendFingerprint.audioHash != nil, backendFingerprint.audioHash == localFingerprint.audioHash {
-            return transcriptSegmentsJSON
+            return TranscriptAlignmentResult(json: transcriptSegmentsJSON, hasUnmatchedSegments: false)
         }
 
         let localByHash = Dictionary(grouping: localChunks, by: \.hash)
         let globalMatches = uniqueMatches(backendChunks: backendChunks, localByHash: localByHash)
         let segmentFingerprints = decodeSegmentFingerprints(segmentFingerprintsJSON)
         var aligned: [AlignedTranscriptSegment] = []
+        var matchedCount = 0
+        var unmatchedCount = 0
 
         for (index, segment) in segments.enumerated() {
-            guard let start = segment.start else { continue }
+            guard let start = segment.start else {
+                aligned.append(AlignedTranscriptSegment(start: nil, end: nil, text: segment.text, alignmentStatus: nil, originalStart: nil, originalEnd: nil))
+                continue
+            }
             let fallbackOffset = offsetNear(start: start, matches: globalMatches, tolerance: backendFingerprint.chunkDuration)
             let segmentOffset = segmentFingerprints[index].flatMap {
                 offset(for: $0, localByHash: localByHash, tolerance: backendFingerprint.chunkDuration, fallbackOffset: fallbackOffset)
             }
-            guard let offset = segmentOffset ?? fallbackOffset else { continue }
-            aligned.append(AlignedTranscriptSegment(start: max(0, start + offset), end: segment.end.map { max(0, $0 + offset) }, text: segment.text))
+            guard let offset = segmentOffset ?? fallbackOffset else {
+                unmatchedCount += 1
+                aligned.append(AlignedTranscriptSegment(start: nil, end: nil, text: segment.text, alignmentStatus: "unmatchedFingerprint", originalStart: segment.start, originalEnd: segment.end))
+                continue
+            }
+            matchedCount += 1
+            aligned.append(AlignedTranscriptSegment(start: max(0, start + offset), end: segment.end.map { max(0, $0 + offset) }, text: segment.text, alignmentStatus: nil, originalStart: segment.start, originalEnd: segment.end))
         }
 
         // Keep partial alignments instead of invalidating the whole transcript when
         // only some audio windows match the downloaded rendition.
-        guard aligned.count >= max(1, min(3, segments.count / 10)) else { return nil }
-        return String(decoding: (try? JSONEncoder().encode(aligned)) ?? Data(), as: UTF8.self)
+        guard matchedCount >= max(1, min(3, segments.count / 10)) else { return nil }
+        let json = String(decoding: (try? JSONEncoder().encode(aligned)) ?? Data(), as: UTF8.self)
+        return TranscriptAlignmentResult(json: json, hasUnmatchedSegments: unmatchedCount > 0)
     }
 
     private static func uniqueMatches(backendChunks: [AudioFingerprintChunk], localByHash: [String: [AudioFingerprintChunk]]) -> [(backend: AudioFingerprintChunk, local: AudioFingerprintChunk)] {
@@ -238,4 +254,7 @@ private struct AlignedTranscriptSegment: Encodable {
     let start: TimeInterval?
     let end: TimeInterval?
     let text: String
+    let alignmentStatus: String?
+    let originalStart: TimeInterval?
+    let originalEnd: TimeInterval?
 }

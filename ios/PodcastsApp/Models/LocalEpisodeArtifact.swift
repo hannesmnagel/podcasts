@@ -13,6 +13,7 @@ final class LocalEpisodeArtifact {
     var transcriptSegmentFingerprintsJSON: String?
     var alignedTranscriptSegmentsJSON: String?
     var alignmentSourceAudioHash: String?
+    var alignmentHasUnmatchedSegments: Bool?
     var fingerprintAlgorithm: String?
     var fingerprintChunksJSON: String?
     var fingerprintAudioHash: String?
@@ -23,6 +24,7 @@ final class LocalEpisodeArtifact {
 
     init(episodeStableID: String) {
         self.episodeStableID = episodeStableID
+        self.alignmentHasUnmatchedSegments = false
         self.updatedAt = .now
     }
 }

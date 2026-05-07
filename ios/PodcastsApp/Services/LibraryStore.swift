@@ -425,6 +425,7 @@ enum LibraryStore {
         artifact.transcriptSegmentFingerprintsJSON = transcript.segmentFingerprintsJSON
         artifact.alignedTranscriptSegmentsJSON = nil
         artifact.alignmentSourceAudioHash = nil
+        artifact.alignmentHasUnmatchedSegments = false
         artifact.updatedAt = .now
     }
 
@@ -455,9 +456,10 @@ enum LibraryStore {
                 chunksJSON: fingerprintChunksJSON,
                 audioHash: artifact.fingerprintAudioHash
             )
-            if let aligned = TranscriptAligner.alignedSegmentsJSON(transcriptSegmentsJSON: transcriptSegmentsJSON, segmentFingerprintsJSON: artifact.transcriptSegmentFingerprintsJSON, backendFingerprint: backendFingerprint, localFingerprint: localFingerprint) {
-                artifact.alignedTranscriptSegmentsJSON = aligned
+            if let result = TranscriptAligner.alignedSegmentsJSON(transcriptSegmentsJSON: transcriptSegmentsJSON, segmentFingerprintsJSON: artifact.transcriptSegmentFingerprintsJSON, backendFingerprint: backendFingerprint, localFingerprint: localFingerprint) {
+                artifact.alignedTranscriptSegmentsJSON = result.json
                 artifact.alignmentSourceAudioHash = localFingerprint.audioHash
+                artifact.alignmentHasUnmatchedSegments = result.hasUnmatchedSegments
                 artifact.updatedAt = .now
             }
         } catch {

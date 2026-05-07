@@ -699,9 +699,10 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
         let cell = tableView.dequeueReusableCell(withIdentifier: NowPlayingTranscriptSegmentCell.reuseIdentifier, for: indexPath) as! NowPlayingTranscriptSegmentCell
         let segment = transcriptSegments[indexPath.row]
         cell.configure(
-            time: segment.start.map(format),
+            time: segment.start.map(format) ?? segment.originalStart.map { "~\(format($0))" },
             text: segment.text,
-            isCurrent: indexPath.row == currentTranscriptSegmentIndex
+            isCurrent: indexPath.row == currentTranscriptSegmentIndex,
+            isUnmatchedFingerprint: segment.isUnmatchedFingerprint
         )
         return cell
     }
@@ -709,6 +710,7 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
         guard transcriptSegments.indices.contains(indexPath.row),
+              !transcriptSegments[indexPath.row].isUnmatchedFingerprint,
               let start = transcriptSegments[indexPath.row].start else { return }
         let previousIndex = currentTranscriptSegmentIndex
         currentTranscriptSegmentIndex = indexPath.row
@@ -1043,13 +1045,14 @@ private final class NowPlayingTranscriptSegmentCell: UITableViewCell {
         fatalError("init(coder:) has not been implemented")
     }
 
-    func configure(time: String?, text: String, isCurrent: Bool) {
+    func configure(time: String?, text: String, isCurrent: Bool, isUnmatchedFingerprint: Bool = false) {
         timeLabel.text = time ?? "--:--"
-        transcriptLabel.text = text
-        container.backgroundColor = isCurrent ? UIColor.systemOrange.withAlphaComponent(0.22) : .clear
-        timeLabel.textColor = isCurrent ? .systemOrange : .tertiaryLabel
-        transcriptLabel.textColor = isCurrent ? .label : .secondaryLabel
+        transcriptLabel.text = isUnmatchedFingerprint ? "DAI / unmatched audio\n\(text)" : text
+        container.backgroundColor = isCurrent ? UIColor.systemOrange.withAlphaComponent(0.22) : (isUnmatchedFingerprint ? UIColor.systemPurple.withAlphaComponent(0.12) : .clear)
+        timeLabel.textColor = isCurrent ? .systemOrange : (isUnmatchedFingerprint ? .systemPurple : .tertiaryLabel)
+        transcriptLabel.textColor = isCurrent ? .label : (isUnmatchedFingerprint ? .systemPurple : .secondaryLabel)
         transcriptLabel.font = .preferredFont(forTextStyle: .title3)
+        selectionStyle = isUnmatchedFingerprint ? .none : .default
     }
 }
 

@@ -8,6 +8,7 @@ final class RootTabController: UITabBarController {
     private let miniPlayer: MiniPlayerView
     private var miniPlayerAccessory: UITabAccessory?
     private var isMiniPlayerSuppressed = false
+    private var predownloadInFlight: Set<String> = []
     private var cancellables: Set<AnyCancellable> = []
 
     private lazy var episodesController = AllEpisodesViewController(modelContext: modelContext, player: player)
@@ -63,29 +64,55 @@ final class RootTabController: UITabBarController {
         player.playbackDidFinish = { [weak self] episode in
             guard let self else { return }
             LibraryStore.markPlayed(episode, in: self.modelContext)
-            guard let nextEpisode = self.nextUnplayedEpisode(after: episode) else { return }
+            let upcoming = self.nextUnplayedEpisodes(after: episode, limit: 2)
+            guard let nextEpisode = upcoming.first else { return }
             Task { [weak self] in
                 guard let self,
                       let playableEpisode = await LibraryStore.playableDownloadedEpisode(for: nextEpisode, in: self.modelContext) else { return }
                 self.player.play(playableEpisode, at: 0, artworkURL: LibraryStore.localArtworkURL(for: playableEpisode, in: self.modelContext))
+                if upcoming.count > 1 {
+                    self.predownload(episode: upcoming[1])
+                }
             }
         }
     }
 
     private func nextUnplayedEpisode(after episode: EpisodeDTO) -> EpisodeDTO? {
+        nextUnplayedEpisodes(after: episode, limit: 1).first
+    }
+
+    private func nextUnplayedEpisodes(after episode: EpisodeDTO, limit: Int) -> [EpisodeDTO] {
         let podcastIDs = Self.subscriptionIDs(in: modelContext)
-        guard !podcastIDs.isEmpty else { return nil }
+        guard !podcastIDs.isEmpty else { return [] }
         let episodes = LibraryStore.visibleEpisodes(LibraryStore.localEpisodes(forPodcastIDs: podcastIDs, in: modelContext), in: modelContext)
         let playedIDs = LibraryStore.playedEpisodeIDs(for: episodes, in: modelContext)
         let unplayed = episodes.filter { $0.stableID != episode.stableID && !playedIDs.contains($0.stableID) }
-        guard !unplayed.isEmpty else { return nil }
+        guard !unplayed.isEmpty else { return [] }
         if let currentIndex = episodes.firstIndex(where: { $0.stableID == episode.stableID }) {
-            let laterInList = episodes[(currentIndex + 1)...].first { candidate in
+            let laterInList = episodes[(currentIndex + 1)...].filter { candidate in
                 candidate.stableID != episode.stableID && !playedIDs.contains(candidate.stableID)
             }
-            if let laterInList { return laterInList }
+            if !laterInList.isEmpty { return Array(laterInList.prefix(limit)) }
         }
-        return unplayed.first
+        return Array(unplayed.prefix(limit))
+    }
+
+    private func predownloadNextEpisodeIfNeeded(current episode: EpisodeDTO, elapsed: TimeInterval, duration: TimeInterval?) {
+        guard let duration, duration > 0 else { return }
+        let remaining = duration - elapsed
+        guard remaining <= 180 else { return }
+        guard let nextEpisode = nextUnplayedEpisode(after: episode) else { return }
+        predownload(episode: nextEpisode)
+    }
+
+    private func predownload(episode: EpisodeDTO) {
+        guard !predownloadInFlight.contains(episode.stableID) else { return }
+        predownloadInFlight.insert(episode.stableID)
+        Task { [weak self] in
+            guard let self else { return }
+            _ = await LibraryStore.playableDownloadedEpisode(for: episode, in: self.modelContext)
+            self.predownloadInFlight.remove(episode.stableID)
+        }
     }
 
     private static func subscriptionIDs(in modelContext: ModelContext) -> [String] {
@@ -101,6 +128,7 @@ final class RootTabController: UITabBarController {
             .sink { [weak self] elapsed, duration, episode in
                 guard let self, let episode else { return }
                 LibraryStore.updatePlaybackState(episode: episode, elapsed: elapsed, duration: duration, in: self.modelContext)
+                self.predownloadNextEpisodeIfNeeded(current: episode, elapsed: elapsed, duration: duration)
             }
             .store(in: &cancellables)
     }

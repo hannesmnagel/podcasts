@@ -81,6 +81,7 @@ enum LibraryStore {
         state.duration = duration ?? episode.duration ?? state.duration
         state.lastListenedAt = .now
         UserDefaults.standard.set(episode.stableID, forKey: lastPlaybackEpisodeIDKey)
+        try? context.save()
     }
 
     static func lastPlaybackEpisode(in context: ModelContext) -> EpisodeDTO? {
@@ -91,9 +92,11 @@ enum LibraryStore {
 
     static func markPlayed(_ episode: EpisodeDTO, in context: ModelContext) {
         let state = episodeState(for: episode, in: context) ?? makeEpisodeState(for: episode, in: context)
-        state.playbackPosition = episode.duration ?? state.duration ?? 0
-        state.duration = episode.duration ?? state.duration
+        let knownDuration = episode.duration ?? state.duration
+        state.playbackPosition = knownDuration ?? 0
+        state.duration = knownDuration
         state.lastListenedAt = .now
+        try? context.save()
     }
 
     static func markUnplayed(_ episode: EpisodeDTO, in context: ModelContext) {
@@ -101,6 +104,7 @@ enum LibraryStore {
         state.playbackPosition = 0
         state.duration = episode.duration ?? state.duration
         state.lastListenedAt = nil
+        try? context.save()
     }
 
     static func isPlayed(_ episode: EpisodeDTO, in context: ModelContext) -> Bool {
@@ -414,10 +418,6 @@ enum LibraryStore {
         }
         do {
             let localFingerprint = try await AudioFingerprintMaker.fingerprint(audioFile: localURL)
-            if artifact.alignmentSourceAudioHash == localFingerprint.audioHash,
-               artifact.alignedTranscriptSegmentsJSON != nil {
-                return
-            }
             let backendFingerprint = AudioFingerprintDTO(
                 id: nil,
                 renditionID: artifact.transcriptRenditionID,

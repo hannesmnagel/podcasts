@@ -32,6 +32,8 @@ final class PlayerController: ObservableObject {
     private var lastAutoSkippedChapterID: String?
     private var isAutoSkipping = false
 
+    var playbackDidFinish: ((EpisodeDTO) -> Void)?
+
     init() {
         player.automaticallyWaitsToMinimizeStalling = false
         configureAudioSession()
@@ -62,6 +64,8 @@ final class PlayerController: ObservableObject {
         elapsed = max(0, startTime)
         duration = episode.duration
         currentEpisode = episode
+        autoSkipChapters = []
+        lastAutoSkippedChapterID = nil
         isPlaying = shouldPlay
         if startTime > 0 {
             item.seek(to: CMTime(seconds: startTime, preferredTimescale: 600), completionHandler: nil)
@@ -233,6 +237,17 @@ final class PlayerController: ObservableObject {
             .sink { [weak self, weak item] likely in
                 guard let self, let item, self.player.currentItem === item else { return }
                 self.debug("item likelyToKeepUp=\(likely) id=\(episode.stableID)")
+            }
+            .store(in: &itemCancellables)
+
+        NotificationCenter.default.publisher(for: AVPlayerItem.didPlayToEndTimeNotification, object: item)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self, weak item] _ in
+                guard let self, let item, self.player.currentItem === item else { return }
+                self.elapsed = self.duration ?? item.duration.seconds
+                self.isPlaying = false
+                self.updateNowPlayingPlaybackState()
+                self.playbackDidFinish?(episode)
             }
             .store(in: &itemCancellables)
     }

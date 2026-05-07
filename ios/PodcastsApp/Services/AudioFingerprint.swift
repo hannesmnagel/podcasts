@@ -172,8 +172,10 @@ enum TranscriptAligner {
 
         for (index, segment) in segments.enumerated() {
             guard let start = segment.start else { continue }
-            let segmentOffset = segmentFingerprints[index].flatMap { offset(for: $0, localByHash: localByHash) }
             let fallbackOffset = offsetNear(start: start, matches: globalMatches, tolerance: backendFingerprint.chunkDuration)
+            let segmentOffset = segmentFingerprints[index].flatMap {
+                offset(for: $0, localByHash: localByHash, tolerance: backendFingerprint.chunkDuration, fallbackOffset: fallbackOffset)
+            }
             guard let offset = segmentOffset ?? fallbackOffset else { continue }
             aligned.append(AlignedTranscriptSegment(start: max(0, start + offset), end: segment.end.map { max(0, $0 + offset) }, text: segment.text))
         }
@@ -200,14 +202,27 @@ enum TranscriptAligner {
         return match.local.start - match.backend.start
     }
 
-    private static func offset(for segment: TranscriptSegmentFingerprint, localByHash: [String: [AudioFingerprintChunk]]) -> TimeInterval? {
+    private static func offset(for segment: TranscriptSegmentFingerprint, localByHash: [String: [AudioFingerprintChunk]], tolerance: TimeInterval, fallbackOffset: TimeInterval?) -> TimeInterval? {
         guard segment.start != nil else { return nil }
         let offsets = segment.chunks.compactMap { chunk -> TimeInterval? in
             guard let candidates = localByHash[chunk.hash], candidates.count == 1 else { return nil }
             return candidates[0].start - chunk.start
         }.sorted()
         guard !offsets.isEmpty else { return nil }
-        return offsets[offsets.count / 2]
+
+        if let fallbackOffset, offsets.count == 1, abs(offsets[0] - fallbackOffset) <= tolerance {
+            return offsets[0]
+        }
+
+        var bestCluster: [TimeInterval] = []
+        for offset in offsets {
+            let cluster = offsets.filter { abs($0 - offset) <= tolerance }
+            if cluster.count > bestCluster.count {
+                bestCluster = cluster
+            }
+        }
+        guard bestCluster.count >= 2 else { return nil }
+        return bestCluster.sorted()[bestCluster.count / 2]
     }
 
     private static func decodeSegmentFingerprints(_ json: String?) -> [Int: TranscriptSegmentFingerprint] {

@@ -38,6 +38,7 @@ final class RootTabController: UITabBarController {
             UINavigationController(rootViewController: searchController)
         ]
         configureMiniPlayer()
+        configureAutoplayNextEpisode()
         restorePlaybackState()
         observePlaybackPersistence()
     }
@@ -56,6 +57,37 @@ final class RootTabController: UITabBarController {
         }
         let position = LibraryStore.playbackPosition(for: episode, in: modelContext)
         player.restore(episode, at: position, artworkURL: LibraryStore.localArtworkURL(for: episode, in: modelContext))
+    }
+
+    private func configureAutoplayNextEpisode() {
+        player.playbackDidFinish = { [weak self] episode in
+            guard let self else { return }
+            LibraryStore.markPlayed(episode, in: self.modelContext)
+            guard let nextEpisode = self.nextUnplayedEpisode(after: episode) else { return }
+            self.player.play(nextEpisode, at: 0, artworkURL: LibraryStore.localArtworkURL(for: nextEpisode, in: self.modelContext))
+        }
+    }
+
+    private func nextUnplayedEpisode(after episode: EpisodeDTO) -> EpisodeDTO? {
+        let podcastIDs = Self.subscriptionIDs(in: modelContext)
+        guard !podcastIDs.isEmpty else { return nil }
+        let episodes = LibraryStore.visibleEpisodes(LibraryStore.localEpisodes(forPodcastIDs: podcastIDs, in: modelContext), in: modelContext)
+        let playedIDs = LibraryStore.playedEpisodeIDs(for: episodes, in: modelContext)
+        let unplayed = episodes.filter { $0.stableID != episode.stableID && !playedIDs.contains($0.stableID) }
+        guard !unplayed.isEmpty else { return nil }
+        if let currentIndex = episodes.firstIndex(where: { $0.stableID == episode.stableID }) {
+            let laterInList = episodes[(currentIndex + 1)...].first { candidate in
+                candidate.stableID != episode.stableID && !playedIDs.contains(candidate.stableID)
+            }
+            if let laterInList { return laterInList }
+        }
+        return unplayed.first
+    }
+
+    private static func subscriptionIDs(in modelContext: ModelContext) -> [String] {
+        var descriptor = FetchDescriptor<PodcastSubscription>(sortBy: [SortDescriptor(\.sortIndex)])
+        descriptor.includePendingChanges = true
+        return ((try? modelContext.fetch(descriptor)) ?? []).map(\.stableID)
     }
 
     private func observePlaybackPersistence() {

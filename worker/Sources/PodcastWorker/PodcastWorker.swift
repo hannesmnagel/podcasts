@@ -131,7 +131,7 @@ struct JobProcessor {
         }
         print("  running Whisper…")
 
-        if let whisper = try? await WhisperRunner(command: config.whisperCommand, model: config.whisperModel).transcribe(audioFile: audioFile) {
+        if let whisper = try? await WhisperRunner(command: config.whisperCommand, model: config.whisperModel).transcribe(audioFile: audioFile, progressLabel: "transcript — \(episode.title)") {
             print("  transcription complete — language: \(whisper.language ?? "unknown"), \(whisper.segmentCount) segments")
             guard whisper.text.count >= 200 else { throw WorkerError.transcriptTooShort(whisper.text.count) }
             return TranscriptUploadDTO(
@@ -296,7 +296,7 @@ struct WhisperRunner {
     let command: String
     let model: String
 
-    func transcribe(audioFile: URL) async throws -> WhisperResult {
+    func transcribe(audioFile: URL, progressLabel: String) async throws -> WhisperResult {
         let outputDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("whisper-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: outputDirectory) }
@@ -313,7 +313,7 @@ struct WhisperRunner {
         let stderrPipe = Pipe()
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
-        let progress = WhisperProgressLogger()
+        let progress = WhisperProgressLogger(label: progressLabel)
         @Sendable func streamLines(_ handle: FileHandle) {
             guard let text = String(data: handle.availableData, encoding: .utf8) else { return }
             progress.consume(text)
@@ -345,9 +345,14 @@ struct WhisperRunner {
 
 final class WhisperProgressLogger: @unchecked Sendable {
     private let lock = NSLock()
+    private let label: String
     private var transcriptLineCount = 0
     private var printedProgress = false
     private var buffered = ""
+
+    init(label: String) {
+        self.label = label
+    }
 
     func consume(_ text: String) {
         lock.lock()
@@ -378,12 +383,12 @@ final class WhisperProgressLogger: @unchecked Sendable {
         if isTranscriptSegmentLine(trimmed) {
             transcriptLineCount += 1
             if transcriptLineCount == 1 || transcriptLineCount.isMultiple(of: 25) {
-                updateProgress("  Whisper progress: ~\(transcriptLineCount) segments transcribed")
+                updateProgress("  [\(label)] Whisper: ~\(transcriptLineCount) segments transcribed")
             }
             return
         }
         if trimmed.localizedCaseInsensitiveContains("progress") || trimmed.contains("%") {
-            updateProgress("  \(trimmed)")
+            updateProgress("  [\(label)] \(trimmed)")
             return
         }
         if printedProgress {

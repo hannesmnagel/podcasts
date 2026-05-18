@@ -71,8 +71,7 @@ struct OpenRouterChapterizer {
                 .init(role: "user", content: prompt)
             ],
             temperature: 0.1,
-            maxTokens: 4096,
-            responseFormat: .init(type: "json_object")
+            maxTokens: 4096
         )
         request.httpBody = try JSONEncoder().encode(body)
         let (data, response) = try await URLSession.shared.data(for: request)
@@ -155,21 +154,15 @@ private struct OpenRouterChatRequest: Encodable {
     let messages: [Message]
     let temperature: Double
     let maxTokens: Int
-    let responseFormat: ResponseFormat
 
     enum CodingKeys: String, CodingKey {
         case model, messages, temperature
         case maxTokens = "max_tokens"
-        case responseFormat = "response_format"
     }
 
     struct Message: Encodable {
         let role: String
         let content: String
-    }
-
-    struct ResponseFormat: Encodable {
-        let type: String
     }
 }
 

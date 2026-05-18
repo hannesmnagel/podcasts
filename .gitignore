@@ -7,4 +7,6 @@ worker/logs/
 worker/.build.deadlock-*/
 xcuserdata/
 .env
+**/.env
+**/.env.local
 *.xcodeproj/project.xcworkspace/xcuserdata/

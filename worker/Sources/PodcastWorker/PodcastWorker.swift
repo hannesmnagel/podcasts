@@ -27,17 +27,11 @@ struct WorkerConfig {
         if let key = env["PODCAST_OPENROUTER_API_KEY"]?.trimmingCharacters(in: .whitespacesAndNewlines), !key.isEmpty {
             return key
         }
-        let defaultPath = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Desktop")
-            .appendingPathComponent("api-key copy.txt")
-            .path
-        let keyPath = env["PODCAST_OPENROUTER_API_KEY_FILE"] ?? defaultPath
-        guard let key = try? String(contentsOfFile: keyPath, encoding: .utf8)
-            .trimmingCharacters(in: .whitespacesAndNewlines),
-              !key.isEmpty else {
-            return nil
+        if let keyPath = env["PODCAST_OPENROUTER_API_KEY_FILE"]?.trimmingCharacters(in: .whitespacesAndNewlines), !keyPath.isEmpty,
+           let key = try? String(contentsOfFile: keyPath, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines), !key.isEmpty {
+            return key
         }
-        return key
+        return nil
     }
 }
 
@@ -319,11 +313,10 @@ struct WhisperRunner {
         let stderrPipe = Pipe()
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
+        let progress = WhisperProgressLogger()
         @Sendable func streamLines(_ handle: FileHandle) {
             guard let text = String(data: handle.availableData, encoding: .utf8) else { return }
-            for line in text.components(separatedBy: "\n") where !line.trimmingCharacters(in: .whitespaces).isEmpty {
-                print("  \(line)")
-            }
+            progress.consume(text)
         }
         stdoutPipe.fileHandleForReading.readabilityHandler = streamLines
         stderrPipe.fileHandleForReading.readabilityHandler = streamLines
@@ -333,6 +326,7 @@ struct WhisperRunner {
         activeChildProcess = nil
         stdoutPipe.fileHandleForReading.readabilityHandler = nil
         stderrPipe.fileHandleForReading.readabilityHandler = nil
+        progress.finish()
         guard process.terminationStatus == 0 else { throw WorkerError.whisperFailed(process.terminationStatus) }
 
         guard let jsonFile = try FileManager.default.contentsOfDirectory(at: outputDirectory, includingPropertiesForKeys: nil).first(where: { $0.pathExtension == "json" }) else {
@@ -346,6 +340,66 @@ struct WhisperRunner {
             .deduplicated(maxConsecutiveIdentical: 2)             // drop hallucination loops
         let segmentsData = try JSONEncoder().encode(segments)
         return WhisperResult(language: output.language, model: command, text: output.text, segmentsJSON: String(decoding: segmentsData, as: UTF8.self), segmentCount: segments.count)
+    }
+}
+
+final class WhisperProgressLogger: @unchecked Sendable {
+    private let lock = NSLock()
+    private var transcriptLineCount = 0
+    private var printedProgress = false
+    private var buffered = ""
+
+    func consume(_ text: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        buffered += text
+        let lines = buffered.components(separatedBy: "\n")
+        buffered = lines.last ?? ""
+        for line in lines.dropLast() {
+            consumeCompleteLine(line)
+        }
+    }
+
+    func finish() {
+        lock.lock()
+        defer { lock.unlock() }
+        if !buffered.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            consumeCompleteLine(buffered)
+        }
+        buffered = ""
+        if printedProgress {
+            FileHandle.standardOutput.write(Data("\n".utf8))
+        }
+    }
+
+    private func consumeCompleteLine(_ line: String) {
+        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        if isTranscriptSegmentLine(trimmed) {
+            transcriptLineCount += 1
+            if transcriptLineCount == 1 || transcriptLineCount.isMultiple(of: 25) {
+                updateProgress("  Whisper progress: ~\(transcriptLineCount) segments transcribed")
+            }
+            return
+        }
+        if trimmed.localizedCaseInsensitiveContains("progress") || trimmed.contains("%") {
+            updateProgress("  \(trimmed)")
+            return
+        }
+        if printedProgress {
+            FileHandle.standardOutput.write(Data("\n".utf8))
+            printedProgress = false
+        }
+        print("  \(trimmed)")
+    }
+
+    private func isTranscriptSegmentLine(_ line: String) -> Bool {
+        line.hasPrefix("[") && line.contains(" --> ") && line.contains("]")
+    }
+
+    private func updateProgress(_ message: String) {
+        printedProgress = true
+        FileHandle.standardOutput.write(Data("\r\(message)".utf8))
     }
 }
 

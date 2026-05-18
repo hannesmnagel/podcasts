@@ -12,12 +12,33 @@ struct WorkerConfig {
     var allowStubTranscripts = ProcessInfo.processInfo.environment["PODCAST_WORKER_ALLOW_STUB"] == "true"
     var whisperCommand = ProcessInfo.processInfo.environment["PODCAST_WHISPER_COMMAND"] ?? "whisper"
     var whisperModel = ProcessInfo.processInfo.environment["PODCAST_WHISPER_MODEL"] ?? ""
+    var chapterProvider = ProcessInfo.processInfo.environment["PODCAST_CHAPTER_PROVIDER"] ?? "openrouter"
+    var openRouterModel = ProcessInfo.processInfo.environment["PODCAST_OPENROUTER_MODEL"] ?? "tencent/hy3-preview"
+    var openRouterAPIKey = Self.openRouterAPIKey()
     var ollamaURL = URL(string: ProcessInfo.processInfo.environment["PODCAST_OLLAMA_URL"] ?? "http://localhost:11434")!
     var ollamaModel = ProcessInfo.processInfo.environment["PODCAST_OLLAMA_MODEL"] ?? "gemma3:12b"
     var ollamaContextWindow = Int(ProcessInfo.processInfo.environment["PODCAST_OLLAMA_CONTEXT"] ?? "65536") ?? 65_536
     var logRawOllamaResponses = ProcessInfo.processInfo.environment["PODCAST_CHAPTER_LOG_RAW"] == "true"
     var minimumChapterSpacing = TimeInterval(ProcessInfo.processInfo.environment["PODCAST_CHAPTER_MIN_SECONDS"] ?? "90") ?? 90
     var maximumChapters = Int(ProcessInfo.processInfo.environment["PODCAST_CHAPTER_MAX_COUNT"] ?? "24") ?? 24
+
+    private static func openRouterAPIKey() -> String? {
+        let env = ProcessInfo.processInfo.environment
+        if let key = env["PODCAST_OPENROUTER_API_KEY"]?.trimmingCharacters(in: .whitespacesAndNewlines), !key.isEmpty {
+            return key
+        }
+        let defaultPath = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Desktop")
+            .appendingPathComponent("api-key copy.txt")
+            .path
+        let keyPath = env["PODCAST_OPENROUTER_API_KEY_FILE"] ?? defaultPath
+        guard let key = try? String(contentsOfFile: keyPath, encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              !key.isEmpty else {
+            return nil
+        }
+        return key
+    }
 }
 
 @main
@@ -86,7 +107,8 @@ struct JobProcessor {
                 let transcript = try await makeTranscript(for: job.episode)
                 try await client.uploadTranscript(transcript, episodeID: job.episode.stableID)
             case "chapters":
-                throw WorkerError.chapterizationDisabled
+                let chapters = try await makeChapters(for: job.episode)
+                try await client.uploadChapters(chapters, episodeID: job.episode.stableID)
             default:
                 throw WorkerError.unsupportedJobKind(job.kind)
             }
@@ -139,18 +161,32 @@ struct JobProcessor {
     private func makeChapters(for episode: EpisodeDTO) async throws -> ChaptersUploadDTO {
         print("  loading transcript for chapterization…")
         let segments = try await transcriptSegments(for: episode)
-        let chapters = try await OllamaChapterizer(
-            baseURL: config.ollamaURL,
-            model: config.ollamaModel,
-            minimumSpacing: config.minimumChapterSpacing,
-            maximumChapters: config.maximumChapters,
-            contextWindow: config.ollamaContextWindow,
-            logRawResponses: config.logRawOllamaResponses
-        ).chapters(for: episode, segments: segments)
+        let source: String
+        let chapters: [ChapterDTO]
+        if config.chapterProvider.lowercased() == "openrouter" {
+            guard let apiKey = config.openRouterAPIKey else { throw WorkerError.openRouterMissingAPIKey }
+            chapters = try await OpenRouterChapterizer(
+                apiKey: apiKey,
+                model: config.openRouterModel,
+                minimumSpacing: config.minimumChapterSpacing,
+                maximumChapters: config.maximumChapters
+            ).chapters(for: episode, segments: segments)
+            source = "worker-openrouter-\(config.openRouterModel)"
+        } else {
+            chapters = try await OllamaChapterizer(
+                baseURL: config.ollamaURL,
+                model: config.ollamaModel,
+                minimumSpacing: config.minimumChapterSpacing,
+                maximumChapters: config.maximumChapters,
+                contextWindow: config.ollamaContextWindow,
+                logRawResponses: config.logRawOllamaResponses
+            ).chapters(for: episode, segments: segments)
+            source = "worker-ollama-\(config.ollamaModel)"
+        }
         guard chapters.count > 1 else { throw WorkerError.chapterizationFailed }
         print("  chapterization complete — \(chapters.count) chapters")
         let data = try JSONEncoder().encode(chapters)
-        return ChaptersUploadDTO(source: "worker-ollama-\(config.ollamaModel)", chaptersJSON: String(decoding: data, as: UTF8.self))
+        return ChaptersUploadDTO(source: source, chaptersJSON: String(decoding: data, as: UTF8.self))
     }
 
     private func transcriptSegments(for episode: EpisodeDTO) async throws -> [TranscriptSegment] {
@@ -401,6 +437,8 @@ enum WorkerError: LocalizedError {
     case chapterizationDisabled
     case chapterizationFailed
     case ollamaInvalidResponse(String)
+    case openRouterMissingAPIKey
+    case openRouterFailed(String)
 
     var errorDescription: String? {
         switch self {
@@ -417,6 +455,8 @@ enum WorkerError: LocalizedError {
         case .chapterizationDisabled: "Chapterization is disabled in the worker"
         case .chapterizationFailed: "Chapterization did not produce enough chapter boundaries"
         case let .ollamaInvalidResponse(reason): "Ollama did not return valid chapter JSON: \(reason)"
+        case .openRouterMissingAPIKey: "OpenRouter API key missing; set PODCAST_OPENROUTER_API_KEY or PODCAST_OPENROUTER_API_KEY_FILE"
+        case let .openRouterFailed(reason): "OpenRouter chapterization failed: \(reason)"
         }
     }
 }

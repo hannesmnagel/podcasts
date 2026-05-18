@@ -81,7 +81,7 @@ struct BackendClient: Sendable {
 
     @discardableResult
     func requestArtifacts(for episodeID: String) async throws -> ArtifactRequestDTO {
-        try await post("episodes/\(episodeID)/artifact-requests", body: ArtifactDemandDTO(transcript: true, chapters: false, fingerprint: true))
+        try await post("episodes/\(episodeID)/artifact-requests", body: ArtifactDemandDTO(transcript: true, chapters: true, fingerprint: true))
     }
 
     func transcript(for episodeID: String) async throws -> TranscriptArtifactDTO {

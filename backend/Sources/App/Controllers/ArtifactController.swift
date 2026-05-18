@@ -23,7 +23,7 @@ struct ArtifactController: RouteCollection {
         let input = try req.content.decode(ArtifactDemandRequest.self)
         let demand = try await ArtifactRequest.query(on: req.db).filter(\.$episode.$id == episodeID).first() ?? ArtifactRequest(episodeID: episodeID)
         let wantsTranscript = input.transcript ?? true
-        let wantsChapters = chaptersEnabled && ((input.chapters ?? false) || wantsTranscript)
+        let wantsChapters = chaptersEnabled && (input.chapters ?? false)
         if wantsTranscript { demand.transcriptCount += 1 }
         if wantsChapters { demand.chapterCount += 1 }
         if input.fingerprint ?? false { demand.fingerprintCount += 1 }
@@ -52,7 +52,7 @@ struct ArtifactController: RouteCollection {
         let podcastID = episode.$podcast.id
         let demand = try await PodcastDemand.query(on: db).filter(\.$podcast.$id == podcastID).first() ?? PodcastDemand(podcastID: podcastID)
         let wantsTranscript = input.transcript ?? true
-        let wantsChapters = chaptersEnabled && ((input.chapters ?? false) || wantsTranscript)
+        let wantsChapters = chaptersEnabled && (input.chapters ?? false)
         if wantsTranscript { demand.transcriptRequests += 1 }
         if wantsChapters { demand.chapterRequests += 1 }
         if input.fingerprint ?? false { demand.fingerprintRequests += 1 }
@@ -220,10 +220,7 @@ struct ArtifactController: RouteCollection {
     }
 
     private func isValidChapterArtifact(_ artifact: ChapterArtifact) -> Bool {
-        let source = artifact.source.lowercased()
-        return artifact.source.hasPrefix(validChapterSourcePrefix)
-            || source.contains("id3")
-            || source.contains("embedded")
+        artifact.source.hasPrefix(validChapterSourcePrefix)
     }
 
     private func findEpisode(_ req: Request) async throws -> Episode {

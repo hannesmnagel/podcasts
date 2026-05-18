@@ -14,6 +14,8 @@ struct WorkerConfig {
     var whisperModel = ProcessInfo.processInfo.environment["PODCAST_WHISPER_MODEL"] ?? ""
     var chapterProvider = ProcessInfo.processInfo.environment["PODCAST_CHAPTER_PROVIDER"] ?? "openrouter"
     var openRouterModel = ProcessInfo.processInfo.environment["PODCAST_OPENROUTER_MODEL"] ?? "tencent/hy3-preview"
+    var openRouterContextWindow = Int(ProcessInfo.processInfo.environment["PODCAST_OPENROUTER_CONTEXT"] ?? "262144") ?? 262_144
+    var openRouterMaxOutputTokens = Int(ProcessInfo.processInfo.environment["PODCAST_OPENROUTER_MAX_TOKENS"] ?? "2048") ?? 2_048
     var openRouterAPIKey = Self.openRouterAPIKey()
     var ollamaURL = URL(string: ProcessInfo.processInfo.environment["PODCAST_OLLAMA_URL"] ?? "http://localhost:11434")!
     var ollamaModel = ProcessInfo.processInfo.environment["PODCAST_OLLAMA_MODEL"] ?? "gemma3:12b"
@@ -101,8 +103,9 @@ struct JobProcessor {
                 let transcript = try await makeTranscript(for: job.episode)
                 try await client.uploadTranscript(transcript, episodeID: job.episode.stableID)
             case "chapters":
-                let chapters = try await makeChapters(for: job.episode)
-                try await client.uploadChapters(chapters, episodeID: job.episode.stableID)
+                if let chapters = try await makeChapters(for: job.episode) {
+                    try await client.uploadChapters(chapters, episodeID: job.episode.stableID)
+                }
             default:
                 throw WorkerError.unsupportedJobKind(job.kind)
             }
@@ -152,13 +155,7 @@ struct JobProcessor {
         return TranscriptUploadDTO(renditionID: fingerprint?.renditionID, locale: "unknown", model: "stub", segmentsJSON: segmentsJSON, segmentFingerprintsJSON: SegmentFingerprintMaker.segmentFingerprintsJSON(transcriptSegmentsJSON: segmentsJSON, fingerprint: fingerprint), textHash: segmentsJSON.stableHash, fingerprint: fingerprint)
     }
 
-    private func makeChapters(for episode: EpisodeDTO) async throws -> ChaptersUploadDTO {
-        if let embedded = try? await EmbeddedChapterLoader.chapters(from: episode.audioURL), embedded.count > 1 {
-            print("  using embedded audio chapters — \(embedded.count) chapters; skipping LLM chapterization")
-            let data = try JSONEncoder().encode(embedded)
-            return ChaptersUploadDTO(source: "id3 embedded", chaptersJSON: String(decoding: data, as: UTF8.self))
-        }
-
+    private func makeChapters(for episode: EpisodeDTO) async throws -> ChaptersUploadDTO? {
         print("  loading transcript for chapterization…")
         let segments = try await transcriptSegments(for: episode)
         let source: String
@@ -169,7 +166,9 @@ struct JobProcessor {
                 apiKey: apiKey,
                 model: config.openRouterModel,
                 minimumSpacing: config.minimumChapterSpacing,
-                maximumChapters: config.maximumChapters
+                maximumChapters: config.maximumChapters,
+                contextWindow: config.openRouterContextWindow,
+                maxOutputTokens: config.openRouterMaxOutputTokens
             ).chapters(for: episode, segments: segments)
             source = "worker-openrouter-\(config.openRouterModel)"
         } else {

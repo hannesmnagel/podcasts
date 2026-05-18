@@ -20,17 +20,17 @@ final class BackendTests: XCTestCase {
             XCTAssertEqual(res.status, .ok)
             let response = try res.content.decode(ArtifactRequestResponse.self)
             XCTAssertEqual(response.transcriptCount, 1)
-            XCTAssertEqual(response.chapterCount, 0)
+            XCTAssertEqual(response.chapterCount, 1)
         })
 
         let jobs = try await WorkerJob.query(on: app.db).all()
-        XCTAssertEqual(jobs.count, 1)
+        XCTAssertEqual(jobs.count, 2)
         XCTAssertTrue(jobs.contains { $0.kind == "transcript" })
-        XCTAssertFalse(jobs.contains { $0.kind == "chapters" })
+        XCTAssertTrue(jobs.contains { $0.kind == "chapters" })
 
         let podcastDemand = try await PodcastDemand.query(on: app.db).filter(\.$podcast.$id == podcast.requireID()).first()
         XCTAssertEqual(podcastDemand?.transcriptRequests, 1)
-        XCTAssertEqual(podcastDemand?.chapterRequests, 0)
+        XCTAssertEqual(podcastDemand?.chapterRequests, 1)
     }
 
     func testWorkerPrefersPodcastsWithMoreTranscriptDemand() async throws {
@@ -70,6 +70,35 @@ final class BackendTests: XCTestCase {
             XCTAssertEqual(job.episode.id, try hotEpisode.requireID())
             XCTAssertEqual(job.episode.stableID, "hot-episode")
         })
+    }
+
+    func testTranscriptOnlyRequestDoesNotQueueChapters() async throws {
+        let app = try await Application.make(.testing)
+        defer { Task { try await app.asyncShutdown() } }
+        try await configure(app)
+        try await app.autoMigrate()
+
+        let podcast = Podcast(stableID: "podcast-stable", feedURL: "https://example.com/feed.xml", title: "Example")
+        try await podcast.save(on: app.db)
+        let episode = Episode(podcastID: try podcast.requireID(), stableID: "episode-stable", guid: "1", title: "Episode", audioURL: "https://example.com/audio.mp3")
+        try await episode.save(on: app.db)
+
+        try await app.test(.POST, "episodes/episode-stable/artifact-requests", beforeRequest: { req in
+            try req.content.encode(ArtifactDemandRequest(transcript: true, chapters: false, fingerprint: false))
+        }, afterResponse: { res async throws in
+            XCTAssertEqual(res.status, .ok)
+            let response = try res.content.decode(ArtifactRequestResponse.self)
+            XCTAssertEqual(response.transcriptCount, 1)
+            XCTAssertEqual(response.chapterCount, 0)
+        })
+
+        let jobs = try await WorkerJob.query(on: app.db).all()
+        XCTAssertEqual(jobs.count, 1)
+        XCTAssertEqual(jobs.first?.kind, "transcript")
+
+        let podcastDemand = try await PodcastDemand.query(on: app.db).filter(\.$podcast.$id == podcast.requireID()).first()
+        XCTAssertEqual(podcastDemand?.transcriptRequests, 1)
+        XCTAssertEqual(podcastDemand?.chapterRequests, 0)
     }
 
     func testCompletedArtifactRequestDoesNotCreateDuplicateWorkerJob() async throws {
@@ -113,6 +142,34 @@ final class BackendTests: XCTestCase {
 
         let jobs = try await WorkerJob.query(on: app.db).filter(\.$kind == "transcript").all()
         XCTAssertEqual(jobs.count, 1)
+    }
+
+    func testCompletedChapterJobWithoutArtifactCreatesNewWorkerJob() async throws {
+        let app = try await Application.make(.testing)
+        defer { Task { try await app.asyncShutdown() } }
+        try await configure(app)
+        try await app.autoMigrate()
+
+        let podcast = Podcast(stableID: "podcast-stable", feedURL: "https://example.com/feed.xml", title: "Example")
+        try await podcast.save(on: app.db)
+        let episode = Episode(podcastID: try podcast.requireID(), stableID: "episode-stable", guid: "1", title: "Episode", audioURL: "https://example.com/audio.mp3")
+        try await episode.save(on: app.db)
+
+        let job = WorkerJob(episodeID: try episode.requireID(), kind: "chapters", priority: 10)
+        job.status = "completed"
+        job.completedAt = Date()
+        try await job.save(on: app.db)
+
+        try await app.test(.POST, "episodes/episode-stable/artifact-requests", beforeRequest: { req in
+            try req.content.encode(ArtifactDemandRequest(transcript: false, chapters: true, fingerprint: false))
+        }, afterResponse: { res async throws in
+            XCTAssertEqual(res.status, .ok)
+        })
+
+        let jobs = try await WorkerJob.query(on: app.db).filter(\.$kind == "chapters").all()
+        XCTAssertEqual(jobs.count, 2)
+        XCTAssertTrue(jobs.contains { $0.status == "completed" })
+        XCTAssertTrue(jobs.contains { $0.status == "pending" })
     }
 
     func testOldTranscriptWithoutSegmentFingerprintsIsRequeued() async throws {

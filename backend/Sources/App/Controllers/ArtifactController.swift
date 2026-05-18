@@ -220,7 +220,10 @@ struct ArtifactController: RouteCollection {
     }
 
     private func isValidChapterArtifact(_ artifact: ChapterArtifact) -> Bool {
-        artifact.source.hasPrefix(validChapterSourcePrefix)
+        let source = artifact.source.lowercased()
+        return artifact.source.hasPrefix(validChapterSourcePrefix)
+            || source.contains("id3")
+            || source.contains("embedded")
     }
 
     private func findEpisode(_ req: Request) async throws -> Episode {

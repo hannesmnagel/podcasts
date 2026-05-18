@@ -21,8 +21,10 @@ struct ArtifactController: RouteCollection {
         let episodeID = try episode.requireID()
         let input = try req.content.decode(ArtifactDemandRequest.self)
         let demand = try await ArtifactRequest.query(on: req.db).filter(\.$episode.$id == episodeID).first() ?? ArtifactRequest(episodeID: episodeID)
-        if input.transcript ?? true { demand.transcriptCount += 1 }
-        if chaptersEnabled, input.chapters ?? true { demand.chapterCount += 1 }
+        let wantsTranscript = input.transcript ?? true
+        let wantsChapters = chaptersEnabled && ((input.chapters ?? false) || wantsTranscript)
+        if wantsTranscript { demand.transcriptCount += 1 }
+        if wantsChapters { demand.chapterCount += 1 }
         if input.fingerprint ?? false { demand.fingerprintCount += 1 }
         try await demand.save(on: req.db)
 
@@ -31,7 +33,6 @@ struct ArtifactController: RouteCollection {
         // Fingerprints are currently produced as part of transcript jobs so both
         // artifacts refer to the same worker-fetched rendition. If an old
         // transcript exists without a fingerprint, queue a fresh transcript job.
-        let wantsTranscript = input.transcript ?? true
         let wantsFingerprint = input.fingerprint ?? false
         let hasTranscriptReadyForAlignment = try await transcriptReadyForAlignment(episodeID: episodeID, on: req.db)
         let hasFingerprint = try await artifactExists(episodeID: episodeID, kind: "fingerprint", on: req.db)
@@ -40,7 +41,7 @@ struct ArtifactController: RouteCollection {
         if needsTranscript || needsFingerprint {
             try await ensureWorkerJob(episodeID: episodeID, kind: "transcript", priority: demand.transcriptCount * 3 + demand.fingerprintCount + podcastPriorityBoost, on: req.db)
         }
-        if chaptersEnabled, input.chapters ?? true, !(try await artifactExists(episodeID: episodeID, kind: "chapters", on: req.db)) {
+        if wantsChapters, !(try await artifactExists(episodeID: episodeID, kind: "chapters", on: req.db)) {
             try await ensureWorkerJob(episodeID: episodeID, kind: "chapters", priority: demand.chapterCount * 2 + podcastPriorityBoost, on: req.db)
         }
         return ArtifactRequestResponse(episodeID: episode.stableID, transcriptCount: demand.transcriptCount, chapterCount: demand.chapterCount, fingerprintCount: demand.fingerprintCount)
@@ -49,8 +50,10 @@ struct ArtifactController: RouteCollection {
     private func incrementPodcastDemand(for episode: Episode, input: ArtifactDemandRequest, on db: any Database) async throws -> PodcastDemand {
         let podcastID = episode.$podcast.id
         let demand = try await PodcastDemand.query(on: db).filter(\.$podcast.$id == podcastID).first() ?? PodcastDemand(podcastID: podcastID)
-        if input.transcript ?? true { demand.transcriptRequests += 1 }
-        if chaptersEnabled, input.chapters ?? true { demand.chapterRequests += 1 }
+        let wantsTranscript = input.transcript ?? true
+        let wantsChapters = chaptersEnabled && ((input.chapters ?? false) || wantsTranscript)
+        if wantsTranscript { demand.transcriptRequests += 1 }
+        if wantsChapters { demand.chapterRequests += 1 }
         if input.fingerprint ?? false { demand.fingerprintRequests += 1 }
         try await demand.save(on: db)
         try await boostPendingJobs(for: podcastID, by: demand.priorityScore, on: db)

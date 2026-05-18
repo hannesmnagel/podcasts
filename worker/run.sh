@@ -2,6 +2,24 @@
 set -euo pipefail
 
 cd "$(dirname "$0")"
+mkdir -p logs
+
+lock_dir="logs/worker.lock"
+if ! mkdir "$lock_dir" 2>/dev/null; then
+  if [ -f logs/worker.pid ]; then
+    existing_pid="$(cat logs/worker.pid 2>/dev/null || true)"
+    if [ -n "$existing_pid" ] && ps -p "$existing_pid" >/dev/null 2>&1; then
+      echo "PodcastWorker already running with wrapper PID $existing_pid"
+      exit 0
+    fi
+  fi
+  echo "Removing stale worker lock"
+  rm -rf "$lock_dir"
+  mkdir "$lock_dir"
+fi
+trap 'rm -rf "$lock_dir"' EXIT INT TERM
+
+echo $$ > logs/worker.pid
 
 if [ -f .env ]; then
   set -a

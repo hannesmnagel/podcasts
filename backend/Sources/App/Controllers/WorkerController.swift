@@ -12,7 +12,7 @@ struct WorkerController: RouteCollection {
     func claim(req: Request) async throws -> ClaimedWorkerJobResponse {
         let input = try req.content.decode(ClaimJobRequest.self)
         for _ in 0..<3 {
-            var pending = try await nextPendingTranscriptJob(on: req.db)
+            var pending = try await nextPendingJob(on: req.db)
             if pending == nil {
                 pending = try await seedBacklogTranscriptJob(on: req.db)
             }
@@ -59,10 +59,9 @@ struct WorkerController: RouteCollection {
         return try ClaimedWorkerJobResponse(job: job)
     }
 
-    private func nextPendingTranscriptJob(on db: any Database) async throws -> WorkerJob? {
+    private func nextPendingJob(on db: any Database) async throws -> WorkerJob? {
         try await WorkerJob.query(on: db)
             .filter(\.$status == "pending")
-            .filter(\.$kind == "transcript")
             .sort(\.$priority, .descending)
             .sort(\.$createdAt, .ascending)
             .first()

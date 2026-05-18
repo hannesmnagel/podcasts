@@ -3,6 +3,7 @@ import Vapor
 
 struct ArtifactController: RouteCollection {
     private let chaptersEnabled = true
+    private let validChapterSourcePrefix = "worker-openrouter-"
 
     func boot(routes: any RoutesBuilder) throws {
         let episodes = routes.grouped("episodes", ":id")
@@ -117,10 +118,11 @@ struct ArtifactController: RouteCollection {
 
     func chapters(req: Request) async throws -> ChapterArtifact {
         let episode = try await findEpisode(req)
-        guard let artifact = try await ChapterArtifact.query(on: req.db)
+        let artifacts = try await ChapterArtifact.query(on: req.db)
             .filter(\.$episode.$id == episode.requireID())
             .sort(\.$createdAt, .descending)
-            .first() else {
+            .all()
+        guard let artifact = artifacts.first(where: isValidChapterArtifact) else {
             throw Abort(.notFound)
         }
         return artifact
@@ -208,12 +210,17 @@ struct ArtifactController: RouteCollection {
                 .filter(\.$episode.$id == episodeID)
                 .first() != nil
         case "chapters":
-            return try await ChapterArtifact.query(on: db)
+            let artifacts = try await ChapterArtifact.query(on: db)
                 .filter(\.$episode.$id == episodeID)
-                .first() != nil
+                .all()
+            return artifacts.contains(where: isValidChapterArtifact)
         default:
             return false
         }
+    }
+
+    private func isValidChapterArtifact(_ artifact: ChapterArtifact) -> Bool {
+        artifact.source.hasPrefix(validChapterSourcePrefix)
     }
 
     private func findEpisode(_ req: Request) async throws -> Episode {

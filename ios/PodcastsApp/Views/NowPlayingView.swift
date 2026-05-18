@@ -21,6 +21,7 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
     private var displayMode: DisplayMode = .artwork
     private var swipePanelCacheKey: String?
     private var appliedSpeedEpisodeID: String?
+    private var artifactLoadTask: Task<Void, Never>?
     private var didSetInitialMediaPage = false
     private var hasInteractedWithMediaPager = false
 
@@ -71,10 +72,6 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
         Task { @MainActor in
             await Task.yield()
             ensureInitialMediaPage()
-        }
-        Task {
-            loadCachedArtifacts()
-            await loadArtifacts()
         }
     }
 
@@ -430,6 +427,13 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
     }
 
     private func bindPlayer() {
+        player.$currentEpisode
+            .map { $0?.stableID }
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.reloadArtifactsForCurrentEpisode() }
+            .store(in: &cancellables)
+
         player.$currentEpisode.combineLatest(player.$isPlaying, player.$elapsed, player.$duration)
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _, _, _, _ in self?.update() }
@@ -762,38 +766,74 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
         return UIMenu(children: children)
     }
 
-    private func loadCachedArtifacts() {
-        guard let episode = player.currentEpisode else { return }
+    private func reloadArtifactsForCurrentEpisode() {
+        artifactLoadTask?.cancel()
+        transcriptText = nil
+        transcriptSegments = []
+        currentTranscriptSegmentIndex = nil
+        chapters = []
+        swipePanelCacheKey = nil
+        player.updateAutoSkipChapters([])
+
+        guard let episode = player.currentEpisode else {
+            update()
+            return
+        }
+
+        loadCachedArtifacts(for: episode)
+        artifactLoadTask = Task { @MainActor [weak self, episode] in
+            await self?.loadArtifacts(for: episode)
+        }
+        update()
+    }
+
+    private func loadCachedArtifacts(for episode: EpisodeDTO) {
+        guard isCurrentEpisode(episode) else { return }
         transcriptText = LibraryStore.cachedTranscriptText(for: episode, in: modelContext)
         transcriptSegments = LibraryStore.cachedTranscriptSegments(for: episode, in: modelContext)
-        Task {
-            chapters = await preferredChapters(for: episode)
-            player.updateAutoSkipChapters(chapters)
-            player.updateNowPlayingArtwork(url: primaryArtworkURL(for: episode))
-            update()
+        Task { @MainActor [weak self, episode] in
+            guard let self else { return }
+            let loadedChapters = await preferredChapters(for: episode)
+            guard !Task.isCancelled, self.isCurrentEpisode(episode) else { return }
+            self.chapters = loadedChapters
+            self.player.updateAutoSkipChapters(loadedChapters)
+            self.player.updateNowPlayingArtwork(url: self.primaryArtworkURL(for: episode))
+            self.update()
         }
     }
 
-    private func loadArtifacts() async {
-        guard let episode = player.currentEpisode else { return }
+    private func loadArtifacts(for episode: EpisodeDTO) async {
+        guard isCurrentEpisode(episode) else { return }
         if let transcript = try? await client.transcript(for: episode.stableID) {
+            guard !Task.isCancelled, isCurrentEpisode(episode) else { return }
             await LibraryStore.cacheTranscript(transcript, for: episode, in: modelContext)
             if let fingerprint = try? await client.fingerprint(for: episode.stableID) {
+                guard !Task.isCancelled, isCurrentEpisode(episode) else { return }
                 LibraryStore.cacheFingerprint(fingerprint, for: episode, in: modelContext)
                 await LibraryStore.alignTranscriptToDownloadedAudio(for: episode, in: modelContext)
             }
+            guard !Task.isCancelled, isCurrentEpisode(episode) else { return }
             transcriptText = LibraryStore.cachedTranscriptText(for: episode, in: modelContext)
             transcriptSegments = LibraryStore.cachedTranscriptSegments(for: episode, in: modelContext)
         }
         if let artifact = try? await client.chapters(for: episode.stableID) {
+            guard !Task.isCancelled, isCurrentEpisode(episode) else { return }
             LibraryStore.cacheChapters(artifact, for: episode, in: modelContext)
-            chapters = await preferredChapters(for: episode)
+            let loadedChapters = await preferredChapters(for: episode)
+            guard !Task.isCancelled, isCurrentEpisode(episode) else { return }
+            chapters = loadedChapters
         } else {
-            chapters = await preferredChapters(for: episode)
+            let loadedChapters = await preferredChapters(for: episode)
+            guard !Task.isCancelled, isCurrentEpisode(episode) else { return }
+            chapters = loadedChapters
         }
         player.updateAutoSkipChapters(chapters)
         player.updateNowPlayingArtwork(url: primaryArtworkURL(for: episode))
         update()
+    }
+
+    private func isCurrentEpisode(_ episode: EpisodeDTO) -> Bool {
+        player.currentEpisode?.stableID == episode.stableID
     }
 
     private func preferredChapters(for episode: EpisodeDTO) async -> [EpisodeChapterDTO] {

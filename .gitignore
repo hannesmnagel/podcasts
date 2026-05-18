@@ -2,6 +2,9 @@
 .build/
 .swiftpm/
 DerivedData/
+build/
+worker/logs/
+worker/.build.deadlock-*/
 xcuserdata/
 .env
 *.xcodeproj/project.xcworkspace/xcuserdata/

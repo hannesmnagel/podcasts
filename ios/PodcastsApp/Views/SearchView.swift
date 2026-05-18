@@ -2,6 +2,10 @@ import SwiftData
 import UIKit
 
 final class SearchViewController: UITableViewController, UISearchResultsUpdating, UISearchBarDelegate {
+    private let crawlingProgressView = UIStackView()
+    private let crawlingSpinner = UIActivityIndicatorView(style: .medium)
+    private let crawlingLabel = UILabel()
+    private let crawlingBackgroundView = UIView()
     private enum Row {
         case podcast(PodcastDTO)
         case directory(PodcastDirectoryDTO)
@@ -28,7 +32,11 @@ final class SearchViewController: UITableViewController, UISearchResultsUpdating
     private var results = EpisodeSearchDTO()
     private var visibleEpisodeSnapshot: [EpisodeDTO] = []
     private var subscriptions: [PodcastSubscription] = []
-    private var addingFeedURL: String?
+    private var addingFeedURL: String? {
+        didSet {
+            updateCrawlingProgressVisibility()
+        }
+    }
     private var playedEpisodeIDs: Set<String> = []
     private var deletedEpisodeIDs: Set<String> = []
     private var summarySnippets: [String: String] = [:]
@@ -52,6 +60,8 @@ final class SearchViewController: UITableViewController, UISearchResultsUpdating
         tableView.register(EpisodeCell.self, forCellReuseIdentifier: EpisodeCell.reuseIdentifier)
         tableView.rowHeight = UITableView.automaticDimension
         tableView.estimatedRowHeight = 86
+
+        setupCrawlingProgressView()
 
         let searchController = UISearchController(searchResultsController: nil)
         searchController.searchResultsUpdater = self
@@ -254,7 +264,8 @@ final class SearchViewController: UITableViewController, UISearchResultsUpdating
             addingFeedURL = nil
             tableView.reloadData()
         }
-        LibraryStore.subscribe(to: client.optimisticPodcast(feedURL: url, title: podcast.title), in: modelContext)
+        let placeholder = client.optimisticPodcast(feedURL: url, title: podcast.title)
+        LibraryStore.subscribe(to: placeholder, in: modelContext)
         loadSubscriptions()
 
         do {
@@ -268,6 +279,8 @@ final class SearchViewController: UITableViewController, UISearchResultsUpdating
             // the next successful background refresh.
         }
     }
+
+
 
     private func updateRows() {
         tableView.reloadData()
@@ -382,6 +395,52 @@ final class SearchViewController: UITableViewController, UISearchResultsUpdating
             return nil
         }
         return url
+    }
+
+    private func setupCrawlingProgressView() {
+        // Configure background
+        crawlingBackgroundView.backgroundColor = UIColor.systemBackground.withAlphaComponent(0.9)
+        crawlingBackgroundView.layer.cornerRadius = 10
+        crawlingBackgroundView.layer.shadowColor = UIColor.black.cgColor
+        crawlingBackgroundView.layer.shadowOpacity = 0.1
+        crawlingBackgroundView.layer.shadowOffset = CGSize(width: 0, height: 2)
+        crawlingBackgroundView.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(crawlingBackgroundView)
+
+        // Configure stack view
+        crawlingProgressView.axis = .horizontal
+        crawlingProgressView.spacing = 8
+        crawlingProgressView.alignment = .center
+        crawlingProgressView.translatesAutoresizingMaskIntoConstraints = false
+        crawlingBackgroundView.addSubview(crawlingProgressView)
+
+        // Configure spinner
+        crawlingSpinner.startAnimating()
+        crawlingProgressView.addArrangedSubview(crawlingSpinner)
+
+        // Configure label
+        crawlingLabel.text = "Server is crawling episodes…"
+        crawlingLabel.font = .preferredFont(forTextStyle: .callout)
+        crawlingProgressView.addArrangedSubview(crawlingLabel)
+
+        // Constraints for background view (floating at bottom)
+        NSLayoutConstraint.activate([
+            crawlingBackgroundView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -20),
+            crawlingBackgroundView.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            crawlingBackgroundView.leadingAnchor.constraint(greaterThanOrEqualTo: view.leadingAnchor, constant: 20),
+            crawlingBackgroundView.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -20),
+
+            crawlingProgressView.topAnchor.constraint(equalTo: crawlingBackgroundView.topAnchor, constant: 12),
+            crawlingProgressView.bottomAnchor.constraint(equalTo: crawlingBackgroundView.bottomAnchor, constant: -12),
+            crawlingProgressView.leadingAnchor.constraint(equalTo: crawlingBackgroundView.leadingAnchor, constant: 16),
+            crawlingProgressView.trailingAnchor.constraint(equalTo: crawlingBackgroundView.trailingAnchor, constant: -16)
+        ])
+
+        crawlingBackgroundView.isHidden = true
+    }
+
+    private func updateCrawlingProgressVisibility() {
+        crawlingBackgroundView.isHidden = addingFeedURL == nil
     }
 }
 

@@ -36,6 +36,10 @@ final class PodcastsSceneDelegate: UIResponder, UIWindowSceneDelegate {
         self.window = window
     }
 
+    func sceneDidBecomeActive(_ scene: UIScene) {
+        (UIApplication.shared.delegate as? PodcastsAppDelegate)?.player.refreshSystemPlaybackIntegration()
+    }
+
     func sceneDidEnterBackground(_ scene: UIScene) {
         (window?.rootViewController as? RootTabController)?.persistCurrentPlaybackState()
     }

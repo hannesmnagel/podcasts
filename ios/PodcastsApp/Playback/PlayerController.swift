@@ -31,6 +31,8 @@ final class PlayerController: ObservableObject {
     private var autoSkipChapters: [EpisodeChapterDTO] = []
     private var lastAutoSkippedChapterID: String?
     private var isAutoSkipping = false
+    private var didInstallRemoteCommandHandlers = false
+    private var shouldResumeAfterAudioInterruption = false
 
     var playbackDidFinish: ((EpisodeDTO) -> Void)?
 
@@ -40,6 +42,7 @@ final class PlayerController: ObservableObject {
         configureRemoteCommands()
         observePlaybackTime()
         observePlaybackState()
+        observeAudioSessionInterruptions()
     }
 
     func play(_ episode: EpisodeDTO, at startTime: TimeInterval = 0, artworkURL: URL? = nil) {
@@ -117,6 +120,12 @@ final class PlayerController: ObservableObject {
     func updateAutoSkipChapters(_ chapters: [EpisodeChapterDTO]) {
         autoSkipChapters = chapters.sorted { $0.start < $1.start }
         lastAutoSkippedChapterID = nil
+    }
+
+    func refreshSystemPlaybackIntegration() {
+        configureAudioSession()
+        configureRemoteCommands()
+        updateNowPlayingPlaybackState()
     }
 
     private func seek(toTime seconds: TimeInterval, resetAutoSkip: Bool) {
@@ -251,7 +260,18 @@ final class PlayerController: ObservableObject {
     }
 
     private func configureRemoteCommands() {
+        UIApplication.shared.beginReceivingRemoteControlEvents()
+
         let center = MPRemoteCommandCenter.shared()
+        center.playCommand.isEnabled = true
+        center.pauseCommand.isEnabled = true
+        center.togglePlayPauseCommand.isEnabled = true
+        center.skipForwardCommand.isEnabled = true
+        center.skipBackwardCommand.isEnabled = true
+
+        guard !didInstallRemoteCommandHandlers else { return }
+        didInstallRemoteCommandHandlers = true
+
         center.playCommand.addTarget { [weak self] _ in
             Task { @MainActor in
                 guard let self, self.player.currentItem != nil else { return }
@@ -295,6 +315,47 @@ final class PlayerController: ObservableObject {
                 self.updateNowPlayingPlaybackState()
             }
             .store(in: &cancellables)
+    }
+
+    private func observeAudioSessionInterruptions() {
+        NotificationCenter.default.publisher(for: AVAudioSession.interruptionNotification)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] notification in
+                self?.handleAudioSessionInterruption(notification)
+            }
+            .store(in: &cancellables)
+    }
+
+    private func handleAudioSessionInterruption(_ notification: Notification) {
+        guard let typeValue = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+              let type = AVAudioSession.InterruptionType(rawValue: typeValue) else {
+            return
+        }
+
+        switch type {
+        case .began:
+            shouldResumeAfterAudioInterruption = isPlaying || player.timeControlStatus == .playing
+            isPlaying = false
+            updateNowPlayingPlaybackState()
+            debug("audio interruption began shouldResume=\(shouldResumeAfterAudioInterruption)")
+        case .ended:
+            configureAudioSession()
+            configureRemoteCommands()
+            let optionValue = notification.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
+            let options = AVAudioSession.InterruptionOptions(rawValue: optionValue)
+            let shouldResume = shouldResumeAfterAudioInterruption && options.contains(.shouldResume)
+            shouldResumeAfterAudioInterruption = false
+            debug("audio interruption ended shouldResume=\(shouldResume) options=\(optionValue)")
+            guard shouldResume, player.currentItem != nil else {
+                updateNowPlayingPlaybackState()
+                return
+            }
+            player.playImmediately(atRate: effectiveSpeed)
+            isPlaying = true
+            updateNowPlayingPlaybackState()
+        @unknown default:
+            updateNowPlayingPlaybackState()
+        }
     }
 
     func updateNowPlayingArtwork(url: URL?) {
@@ -396,17 +457,21 @@ final class PlayerController: ObservableObject {
     }
 
     private func updateNowPlaying(for episode: EpisodeDTO, artworkURL: URL?) {
-        setNowPlayingInfo([
-            MPMediaItemPropertyTitle: episode.title,
-            MPNowPlayingInfoPropertyPlaybackRate: isPlaying ? effectiveSpeed : 0,
-            MPNowPlayingInfoPropertyElapsedPlaybackTime: elapsed,
-            MPMediaItemPropertyPlaybackDuration: duration ?? 0
-        ], reason: "episode metadata")
+        var info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
+        info[MPMediaItemPropertyTitle] = episode.title
+        info[MPNowPlayingInfoPropertyMediaType] = MPNowPlayingInfoMediaType.audio.rawValue
+        info[MPNowPlayingInfoPropertyDefaultPlaybackRate] = effectiveSpeed
+        info[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? effectiveSpeed : 0
+        info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = elapsed
+        info[MPMediaItemPropertyPlaybackDuration] = duration ?? 0
+        setNowPlayingInfo(info, reason: "episode metadata")
         updateNowPlayingArtwork(url: artworkURL)
     }
 
     private func updateNowPlayingPlaybackState() {
         guard var info = MPNowPlayingInfoCenter.default().nowPlayingInfo else { return }
+        info[MPNowPlayingInfoPropertyMediaType] = MPNowPlayingInfoMediaType.audio.rawValue
+        info[MPNowPlayingInfoPropertyDefaultPlaybackRate] = effectiveSpeed
         info[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? effectiveSpeed : 0
         info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = elapsed
         if let duration { info[MPMediaItemPropertyPlaybackDuration] = duration }

@@ -63,9 +63,18 @@ final class RootTabController: UITabBarController {
     private func configureAutoplayNextEpisode() {
         player.playbackDidFinish = { [weak self] episode in
             guard let self else { return }
-            LibraryStore.markPlayed(episode, in: self.modelContext)
+            LibraryStore.finishNaturalPlayback(episode, in: self.modelContext)
             let upcoming = self.nextUnplayedEpisodes(after: episode, limit: 2)
             guard let nextEpisode = upcoming.first else { return }
+
+            if let playableEpisode = LibraryStore.downloadedEpisode(for: nextEpisode, in: self.modelContext) {
+                self.player.play(playableEpisode, at: 0, artworkURL: LibraryStore.localArtworkURL(for: playableEpisode, in: self.modelContext))
+                if upcoming.count > 1 {
+                    self.predownload(episode: upcoming[1])
+                }
+                return
+            }
+
             Task { [weak self] in
                 guard let self,
                       let playableEpisode = await LibraryStore.playableDownloadedEpisode(for: nextEpisode, in: self.modelContext) else { return }

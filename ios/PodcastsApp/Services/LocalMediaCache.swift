@@ -76,6 +76,11 @@ enum LocalMediaCache {
             .appendingPathComponent(fileName(for: remoteURL), isDirectory: false)
     }
 
+    static func existingCachedFileURL(for remoteURL: URL) async -> URL? {
+        let destination = cachedFileURL(for: remoteURL)
+        return await fileExists(at: destination) ? destination : nil
+    }
+
     static func cachedOrDownload(_ remoteURL: URL, progressID: String? = nil) async throws -> URL {
         let destination = cachedFileURL(for: remoteURL)
         if await fileExists(at: destination) {
@@ -83,6 +88,10 @@ enum LocalMediaCache {
                 await DownloadProgressCenter.shared.finish(id: progressID)
             }
             return destination
+        }
+
+        guard !NetworkMonitor.shared.isOffline else {
+            throw URLError(.notConnectedToInternet)
         }
 
         try await createCacheDirectory()

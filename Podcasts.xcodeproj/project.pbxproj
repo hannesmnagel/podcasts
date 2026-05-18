@@ -33,11 +33,13 @@
 		CCAB1B580940769F80DFBECA /* AudioFingerprint.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC1F61CD6A1ADE3A6D7FB931 /* AudioFingerprint.swift */; };
 		CF5155921133475FEE365FDF /* DownloadSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = ECA6BB4992C4C3E331120520 /* DownloadSettings.swift */; };
 		D33149ACB7F6342B1E389034 /* BackendClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 37195B288FF63CB94CF9FD15 /* BackendClient.swift */; };
+		DEFAF0414516D9318B735147 /* NetworkMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0AF8439699354FD0F2AE4753 /* NetworkMonitor.swift */; };
 		E87DDCD0AD82451592F2DEC3 /* LocalEpisodeState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B8AA770790EC7DA256269FC /* LocalEpisodeState.swift */; };
 		F7B8B9683B6D09B5176C05AA /* ChapterSkipRulesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 661448609AF848CF2EE58F5A /* ChapterSkipRulesView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		0AF8439699354FD0F2AE4753 /* NetworkMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkMonitor.swift; sourceTree = "<group>"; };
 		1045204BCEB2B486E3CADE53 /* RootTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootTabView.swift; sourceTree = "<group>"; };
 		246138886CAA032954429017 /* PlayerController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayerController.swift; sourceTree = "<group>"; };
 		26497049BF3384A069F81FA0 /* PodcastsApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PodcastsApp.swift; sourceTree = "<group>"; };
@@ -81,6 +83,7 @@
 				6F48B7A94CCEC79440025DB3 /* EpisodeDataProcessor.swift */,
 				C389E5B6E09857A50E692F67 /* LibraryStore.swift */,
 				EAC297F4693CC713D46ED366 /* LocalMediaCache.swift */,
+				0AF8439699354FD0F2AE4753 /* NetworkMonitor.swift */,
 				ADFC71357BCBAD8315487F54 /* ShowNotesProcessor.swift */,
 				48E51DE251937E0D9F12CFCD /* TimeFormatting.swift */,
 			);
@@ -254,6 +257,7 @@
 				E87DDCD0AD82451592F2DEC3 /* LocalEpisodeState.swift in Sources */,
 				23A4DC844562DFA30339C335 /* LocalMediaCache.swift in Sources */,
 				848A9A77C2EAFB63E3A8799B /* MiniPlayerView.swift in Sources */,
+				DEFAF0414516D9318B735147 /* NetworkMonitor.swift in Sources */,
 				4D2696032B46125BA33AE265 /* NowPlayingView.swift in Sources */,
 				5C09F7290F33BBDC6364B6B7 /* PlayerController.swift in Sources */,
 				389954AC698C02A916345AC9 /* Playlist.swift in Sources */,
@@ -333,7 +337,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 21;
+				CURRENT_PROJECT_VERSION = 24;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				INFOPLIST_FILE = ios/PodcastsApp/Info.plist;
 				INFOPLIST_KEY_BackendBaseURL = "https://podcasts.hannesnagel.com";
@@ -358,7 +362,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 21;
+				CURRENT_PROJECT_VERSION = 24;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				INFOPLIST_FILE = ios/PodcastsApp/Info.plist;
 				INFOPLIST_KEY_BackendBaseURL = "https://podcasts.hannesnagel.com";

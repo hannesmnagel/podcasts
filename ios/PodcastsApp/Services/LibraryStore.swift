@@ -13,6 +13,8 @@ enum LibraryStore {
             existing.podcastDescription = nonEmpty(podcast.description) ?? existing.podcastDescription
             existing.artworkURL = nonEmpty(podcast.imageURL).flatMap(URL.init(string:)) ?? existing.artworkURL
             existing.feedURL = URL(string: podcast.feedURL) ?? existing.feedURL
+            prefetchArtwork(for: existing.artworkURL)
+            try? context.save()
             return
         }
         guard let feedURL = URL(string: podcast.feedURL) else { return }
@@ -20,10 +22,13 @@ enum LibraryStore {
             stableID: stableID,
             feedURL: feedURL,
             title: nonEmpty(podcast.title) ?? podcast.feedURL,
-            artworkURL: nonEmpty(podcast.imageURL).flatMap(URL.init(string:))
+            artworkURL: nonEmpty(podcast.imageURL).flatMap(URL.init(string:)),
+            sortIndex: 0
         )
         subscription.podcastDescription = nonEmpty(podcast.description)
         context.insert(subscription)
+        prefetchArtwork(for: subscription.artworkURL)
+        try? context.save()
     }
 
     static func subscribe(to podcasts: [PodcastDTO], in context: ModelContext) {
@@ -102,6 +107,18 @@ enum LibraryStore {
         try? context.save()
     }
 
+    static func finishNaturalPlayback(_ episode: EpisodeDTO, in context: ModelContext) {
+        markPlayed(episode, in: context)
+
+        guard let podcastStableID = episode.podcastStableID,
+              let subscription = subscription(stableID: podcastStableID, in: context),
+              DownloadSettings.policy(for: subscription) == .unplayed else {
+            return
+        }
+
+        removeDownload(for: episode, in: context)
+    }
+
     static func markUnplayed(_ episode: EpisodeDTO, in context: ModelContext) {
         let state = episodeState(for: episode, in: context) ?? makeEpisodeState(for: episode, in: context)
         state.playbackPosition = 0
@@ -155,19 +172,25 @@ enum LibraryStore {
     }
 
     static func playableDownloadedEpisode(for episode: EpisodeDTO, in context: ModelContext, progressID: String? = nil) async -> EpisodeDTO? {
+        if let downloadedEpisode = downloadedEpisode(for: episode, in: context) { return downloadedEpisode }
+
+        let state = episodeState(for: episode, in: context) ?? makeEpisodeState(for: episode, in: context)
+        await downloadAudio(for: episode, in: context, progressID: progressID)
+        guard state.isDownloaded,
+              let downloadedFileURL = state.downloadedFileURL,
+              FileManager.default.fileExists(atPath: downloadedFileURL.path) else {
+            return nil
+        }
+        return state.episodeDTO(preferDownloadedFile: true)
+    }
+
+    static func downloadedEpisode(for episode: EpisodeDTO, in context: ModelContext) -> EpisodeDTO? {
         if let url = URL(string: episode.audioURL), url.isFileURL, FileManager.default.fileExists(atPath: url.path) {
             return episode
         }
 
-        let state = episodeState(for: episode, in: context) ?? makeEpisodeState(for: episode, in: context)
-        if state.isDownloaded,
-           let downloadedFileURL = state.downloadedFileURL,
-           FileManager.default.fileExists(atPath: downloadedFileURL.path) {
-            return state.episodeDTO(preferDownloadedFile: true)
-        }
-
-        await downloadAudio(for: episode, in: context, progressID: progressID)
-        guard state.isDownloaded,
+        guard let state = episodeState(for: episode, in: context),
+              state.isDownloaded,
               let downloadedFileURL = state.downloadedFileURL,
               FileManager.default.fileExists(atPath: downloadedFileURL.path) else {
             return nil
@@ -375,7 +398,12 @@ enum LibraryStore {
     static func showArtworkURL(for episode: EpisodeDTO, in context: ModelContext) -> URL? {
         guard let podcastStableID = episode.podcastStableID else { return nil }
         let descriptor = FetchDescriptor<PodcastSubscription>(predicate: #Predicate { $0.stableID == podcastStableID })
-        return try? context.fetch(descriptor).first?.artworkURL
+        guard let artworkURL = try? context.fetch(descriptor).first?.artworkURL else { return nil }
+        let cachedArtworkURL = LocalMediaCache.cachedFileURL(for: artworkURL)
+        if FileManager.default.fileExists(atPath: cachedArtworkURL.path) {
+            return cachedArtworkURL
+        }
+        return artworkURL
     }
 
     static func artifact(for episode: EpisodeDTO, in context: ModelContext) -> LocalEpisodeArtifact? {
@@ -529,11 +557,23 @@ enum LibraryStore {
         return artifact
     }
 
+    private static func subscription(stableID: String, in context: ModelContext) -> PodcastSubscription? {
+        let descriptor = FetchDescriptor<PodcastSubscription>(predicate: #Predicate { $0.stableID == stableID })
+        return try? context.fetch(descriptor).first
+    }
+
     private static func nonEmpty(_ value: String?) -> String? {
         guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else {
             return nil
         }
         return trimmed
+    }
+
+    private static func prefetchArtwork(for artworkURL: URL?) {
+        guard let artworkURL else { return }
+        Task {
+            _ = try? await LocalMediaCache.cachedOrDownload(artworkURL)
+        }
     }
 
     private static func prefetchImage(for episode: EpisodeDTO, in context: ModelContext) async {

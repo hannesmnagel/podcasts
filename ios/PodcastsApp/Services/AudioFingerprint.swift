@@ -171,14 +171,18 @@ enum TranscriptAligner {
         }
 
         let localByHash = Dictionary(grouping: localChunks, by: \.hash)
-        let globalMatches = uniqueMatches(backendChunks: backendChunks, localByHash: localByHash)
+        let globalMatches = mergedMatches(
+            exactMatches: uniqueMatches(backendChunks: backendChunks, localByHash: localByHash),
+            approximateMatches: approximateProfileMatches(backendChunks: backendChunks, localChunks: localChunks)
+        )
         let segmentFingerprints = decodeSegmentFingerprints(segmentFingerprintsJSON)
+        let anchorTolerance = max(20, backendFingerprint.chunkDuration * 4)
         var matched: [AlignedTranscriptSegment] = []
         var matchedCount = 0
 
         for (index, segment) in segments.enumerated() {
             guard let start = segment.start else { continue }
-            let fallbackOffset = offsetNear(start: start, matches: globalMatches, tolerance: backendFingerprint.chunkDuration)
+            let fallbackOffset = offsetNear(start: start, matches: globalMatches, tolerance: anchorTolerance)
             let segmentOffset = segmentFingerprints[index].flatMap {
                 offset(for: $0, localByHash: localByHash, tolerance: backendFingerprint.chunkDuration, fallbackOffset: fallbackOffset)
             }
@@ -224,6 +228,90 @@ enum TranscriptAligner {
             guard let candidates = localByHash[backendChunk.hash], candidates.count == 1 else { return nil }
             return (backendChunk, candidates[0])
         }
+    }
+
+    private static func approximateProfileMatches(backendChunks: [AudioFingerprintChunk], localChunks: [AudioFingerprintChunk]) -> [(backend: AudioFingerprintChunk, local: AudioFingerprintChunk)] {
+        let windowSize = 3
+        guard backendChunks.count >= windowSize, localChunks.count >= windowSize else { return [] }
+
+        var localBestBackendIndex: [Int: Int] = [:]
+        for localIndex in 0...(localChunks.count - windowSize) {
+            guard let best = bestProfileWindowMatch(
+                sourceStartIndex: localIndex,
+                sourceChunks: localChunks,
+                candidateChunks: backendChunks,
+                windowSize: windowSize
+            ) else { continue }
+            localBestBackendIndex[localIndex] = best.index
+        }
+
+        var matches: [(backend: AudioFingerprintChunk, local: AudioFingerprintChunk)] = []
+        var usedLocalIndexes = Set<Int>()
+        for backendIndex in 0...(backendChunks.count - windowSize) {
+            guard let best = bestProfileWindowMatch(
+                sourceStartIndex: backendIndex,
+                sourceChunks: backendChunks,
+                candidateChunks: localChunks,
+                windowSize: windowSize
+            ),
+                  localBestBackendIndex[best.index] == backendIndex,
+                  usedLocalIndexes.insert(best.index).inserted else { continue }
+            matches.append((backendChunks[backendIndex], localChunks[best.index]))
+        }
+        return matches
+    }
+
+    private static func bestProfileWindowMatch(sourceStartIndex: Int, sourceChunks: [AudioFingerprintChunk], candidateChunks: [AudioFingerprintChunk], windowSize: Int) -> (index: Int, distance: Double)? {
+        var best: (index: Int, distance: Double)?
+        var secondBestDistance = Double.greatestFiniteMagnitude
+        for candidateIndex in 0...(candidateChunks.count - windowSize) {
+            let distance = profileWindowDistance(
+                sourceStartIndex: sourceStartIndex,
+                candidateStartIndex: candidateIndex,
+                sourceChunks: sourceChunks,
+                candidateChunks: candidateChunks,
+                windowSize: windowSize
+            )
+            if let currentBest = best {
+                if distance < currentBest.distance {
+                    secondBestDistance = currentBest.distance
+                    best = (candidateIndex, distance)
+                } else if distance < secondBestDistance {
+                    secondBestDistance = distance
+                }
+            } else {
+                best = (candidateIndex, distance)
+            }
+        }
+
+        guard let best,
+              best.distance <= 18,
+              secondBestDistance - best.distance >= 3 else { return nil }
+        return best
+    }
+
+    private static func profileWindowDistance(sourceStartIndex: Int, candidateStartIndex: Int, sourceChunks: [AudioFingerprintChunk], candidateChunks: [AudioFingerprintChunk], windowSize: Int) -> Double {
+        var total = 0.0
+        var count = 0
+        for offset in 0..<windowSize {
+            let sourceProfile = sourceChunks[sourceStartIndex + offset].profile
+            let candidateProfile = candidateChunks[candidateStartIndex + offset].profile
+            let pairCount = min(sourceProfile.count, candidateProfile.count)
+            for index in 0..<pairCount {
+                total += abs(Double(sourceProfile[index]) - Double(candidateProfile[index]))
+                count += 1
+            }
+        }
+        guard count > 0 else { return Double.greatestFiniteMagnitude }
+        return total / Double(count)
+    }
+
+    private static func mergedMatches(exactMatches: [(backend: AudioFingerprintChunk, local: AudioFingerprintChunk)], approximateMatches: [(backend: AudioFingerprintChunk, local: AudioFingerprintChunk)]) -> [(backend: AudioFingerprintChunk, local: AudioFingerprintChunk)] {
+        var byBackendIndex = Dictionary(uniqueKeysWithValues: exactMatches.map { ($0.backend.index, $0) })
+        for match in approximateMatches where byBackendIndex[match.backend.index] == nil {
+            byBackendIndex[match.backend.index] = match
+        }
+        return byBackendIndex.values.sorted { $0.backend.start < $1.backend.start }
     }
 
     private static func offsetNear(start: TimeInterval, matches: [(backend: AudioFingerprintChunk, local: AudioFingerprintChunk)], tolerance: TimeInterval) -> TimeInterval? {

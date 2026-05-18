@@ -11,6 +11,12 @@ struct BackendClient: Sendable {
         encoder.dateEncodingStrategy = .iso8601
     }
 
+    private func checkNetwork() throws {
+        if NetworkMonitor.shared.isOffline {
+            throw BackendError.offline
+        }
+    }
+
     func podcasts() async throws -> [PodcastDTO] { try await get("podcasts") }
 
     func optimisticPodcast(feedURL: URL, title: String? = nil) -> PodcastDTO {
@@ -95,12 +101,14 @@ struct BackendClient: Sendable {
     }
 
     private func get<T: Decodable>(_ path: String) async throws -> T {
+        try checkNetwork()
         let (data, response) = try await URLSession.shared.data(from: url(for: path))
         try validate(response, data: data)
         return try decoder.decode(T.self, from: data)
     }
 
     private func post<T: Decodable, Body: Encodable>(_ path: String, body: Body) async throws -> T {
+        try checkNetwork()
         var request = URLRequest(url: url(for: path))
         request.httpMethod = "POST"
         request.addValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -111,6 +119,7 @@ struct BackendClient: Sendable {
     }
 
     private func post<T: Decodable>(_ path: String) async throws -> T {
+        try checkNetwork()
         var request = URLRequest(url: url(for: path))
         request.httpMethod = "POST"
         let (data, response) = try await URLSession.shared.data(for: request)
@@ -119,6 +128,7 @@ struct BackendClient: Sendable {
     }
 
     private func postEmpty(_ path: String) async throws {
+        try checkNetwork()
         var request = URLRequest(url: url(for: path))
         request.httpMethod = "POST"
         let (data, response) = try await URLSession.shared.data(for: request)
@@ -140,11 +150,13 @@ struct BackendClient: Sendable {
 
 enum BackendError: LocalizedError {
     case notFound
+    case offline
     case server(status: Int, body: String?)
 
     var errorDescription: String? {
         switch self {
         case .notFound: "Not found"
+        case .offline: "No internet connection"
         case let .server(status, body): "Server error \(status): \(body ?? "")"
         }
     }
@@ -270,6 +282,14 @@ struct EpisodeChapterDTO: Codable, Identifiable, Hashable, Sendable {
 enum StableID {
     static func podcastID(feedURL: URL) -> String {
         sha256(normalizeURL(feedURL.absoluteString))
+    }
+
+    static func episodeID(podcastID: String, guid: String?, audioURL: String, title: String, publishedAt: Date?) -> String {
+        let formatter = ISO8601DateFormatter()
+        let published = publishedAt.map { formatter.string(from: $0) } ?? ""
+        let source = [podcastID, guid ?? "", normalizeURL(audioURL), title.trimmingCharacters(in: .whitespacesAndNewlines), published]
+            .joined(separator: "|")
+        return sha256(source)
     }
 
     private static func normalizeURL(_ raw: String) -> String {

@@ -1022,8 +1022,14 @@ final class ArtworkImageView: UIImageView {
         let data: Data?
         if url.isFileURL {
             data = try? Data(contentsOf: url)
+        } else if let cachedURL = await LocalMediaCache.existingCachedFileURL(for: url) {
+            data = try? Data(contentsOf: cachedURL)
+        } else if NetworkMonitor.shared.isOffline {
+            data = nil
+        } else if let cachedURL = try? await LocalMediaCache.cachedOrDownload(url) {
+            data = try? Data(contentsOf: cachedURL)
         } else {
-            data = try? await URLSession.shared.data(from: url).0
+            data = nil
         }
         guard let data else { return nil }
         return downsample(data: data, targetSize: targetSize, scale: scale, minimumPixelDimension: minimumPixelDimension)

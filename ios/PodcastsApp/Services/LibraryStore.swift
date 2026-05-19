@@ -665,7 +665,9 @@ enum LibraryStore {
         guard !chapters.isEmpty else { return }
         var imageFiles = await EpisodeDataProcessor.decodeChapterImageFiles(artifact.chapterImageFilesJSON)
         for chapter in chapters {
-            guard let remoteURL = chapter.displayImageURL, imageFiles[remoteURL.absoluteString] == nil else { continue }
+            guard let remoteURL = chapter.displayImageURL,
+                  remoteURL.scheme == "http" || remoteURL.scheme == "https",
+                  imageFiles[remoteURL.absoluteString] == nil else { continue }
             if let localURL = try? await LocalMediaCache.cachedOrDownload(remoteURL) {
                 imageFiles[remoteURL.absoluteString] = localURL.absoluteString
                 artifact.chapterImageFilesJSON = await EpisodeDataProcessor.encodeChapterImageFiles(imageFiles)

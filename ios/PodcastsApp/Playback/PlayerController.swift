@@ -430,9 +430,26 @@ final class PlayerController: ObservableObject {
 
     @concurrent
     private static func preparedNowPlayingArtwork(from url: URL) async throws -> CGImage? {
+        if url.scheme == "data" {
+            return dataURLImageData(url).flatMap(decodedNowPlayingArtwork)
+        }
         let localURL = url.isFileURL ? url : try await LocalMediaCache.cachedOrDownload(url)
         let data = try Data(contentsOf: localURL)
         return decodedNowPlayingArtwork(from: data)
+    }
+
+    nonisolated private static func dataURLImageData(_ url: URL) -> Data? {
+        let raw = url.absoluteString
+        guard raw.hasPrefix("data:"),
+              let comma = raw.firstIndex(of: ",") else {
+            return nil
+        }
+        let metadata = raw[..<comma].lowercased()
+        let payload = raw[raw.index(after: comma)...]
+        if metadata.contains(";base64") {
+            return Data(base64Encoded: String(payload))
+        }
+        return String(payload).removingPercentEncoding.flatMap { Data($0.utf8) }
     }
 
     private func clearNowPlayingArtwork() {

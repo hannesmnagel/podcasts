@@ -3,7 +3,12 @@ import Vapor
 
 struct ArtifactController: RouteCollection {
     private let chaptersEnabled = true
-    private let validChapterSourcePrefix = "worker-openrouter-"
+    private let validChapterSourcePrefixes = [
+        "worker-openrouter-",
+        "worker-ollama-",
+        "embedded-",
+        "feed-"
+    ]
 
     func boot(routes: any RoutesBuilder) throws {
         let episodes = routes.grouped("episodes", ":id")
@@ -220,7 +225,8 @@ struct ArtifactController: RouteCollection {
     }
 
     private func isValidChapterArtifact(_ artifact: ChapterArtifact) -> Bool {
-        artifact.source.hasPrefix(validChapterSourcePrefix)
+        let source = artifact.source.lowercased()
+        return validChapterSourcePrefixes.contains { source.hasPrefix($0) }
     }
 
     private func findEpisode(_ req: Request) async throws -> Episode {

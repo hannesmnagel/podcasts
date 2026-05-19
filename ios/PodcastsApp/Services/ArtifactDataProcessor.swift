@@ -130,6 +130,7 @@ enum ID3ChapterParser {
         let startMilliseconds = bigEndianInteger(data, at: timingStart)
         let endMilliseconds = bigEndianInteger(data, at: timingStart + 4)
         var title: String?
+        var imageURL: String?
         var offset = timingStart + 16
 
         while offset + 10 <= range.upperBound {
@@ -138,14 +139,17 @@ enum ID3ChapterParser {
             let bodyEnd = min(range.upperBound, bodyStart + subframe.size)
             if subframe.id == "TIT2" {
                 title = textFrame(in: data, range: bodyStart..<bodyEnd)
-                break
+            } else if subframe.id == "APIC" {
+                imageURL = attachedPictureDataURL(in: data, range: bodyStart..<bodyEnd) ?? imageURL
+            } else if subframe.id.hasPrefix("W") {
+                imageURL = urlFrame(in: data, range: bodyStart..<bodyEnd, id: subframe.id) ?? imageURL
             }
             offset = bodyEnd
         }
 
         guard let title, !title.isEmpty else { return nil }
         let end = endMilliseconds > startMilliseconds ? TimeInterval(endMilliseconds) / 1000 : nil
-        return EpisodeChapterDTO(start: TimeInterval(startMilliseconds) / 1000, end: end, title: title, imageURL: nil, artworkURL: nil)
+        return EpisodeChapterDTO(start: TimeInterval(startMilliseconds) / 1000, end: end, title: title, imageURL: imageURL, artworkURL: nil)
     }
 
     private static func textFrame(in data: Data, range: Range<Int>) -> String? {
@@ -162,6 +166,62 @@ enum ID3ChapterParser {
         return String(data: Data(textData), encoding: stringEncoding)?
             .replacingOccurrences(of: "\u{0}", with: "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func urlFrame(in data: Data, range: Range<Int>, id: String) -> String? {
+        guard range.lowerBound < range.upperBound else { return nil }
+        let urlData: Data
+        if id == "WXXX" {
+            let encoding = data[range.lowerBound]
+            let contentStart = range.lowerBound + 1
+            guard contentStart < range.upperBound else { return nil }
+            let separatorLength = (encoding == 1 || encoding == 2) ? 2 : 1
+            guard let separator = encodedNullTerminator(in: data, range: contentStart..<range.upperBound, length: separatorLength) else {
+                return nil
+            }
+            urlData = Data(data[(separator + separatorLength)..<range.upperBound])
+        } else {
+            urlData = Data(data[range])
+        }
+        let url = String(data: urlData, encoding: .utf8) ?? String(data: urlData, encoding: .isoLatin1)
+        let trimmed = url?.replacingOccurrences(of: "\u{0}", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let trimmed, URL(string: trimmed) != nil else { return nil }
+        return trimmed
+    }
+
+    private static func attachedPictureDataURL(in data: Data, range: Range<Int>) -> String? {
+        guard range.lowerBound + 4 < range.upperBound else { return nil }
+        let encoding = data[range.lowerBound]
+        let mimeStart = range.lowerBound + 1
+        guard let mimeEnd = data[mimeStart..<range.upperBound].firstIndex(of: 0) else { return nil }
+        let mimeType = String(data: Data(data[mimeStart..<mimeEnd]), encoding: .isoLatin1)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let descriptionStart = mimeEnd + 2
+        guard descriptionStart <= range.upperBound else { return nil }
+        let separatorLength = (encoding == 1 || encoding == 2) ? 2 : 1
+        let pictureStart: Int
+        if let descriptionEnd = encodedNullTerminator(in: data, range: descriptionStart..<range.upperBound, length: separatorLength) {
+            pictureStart = descriptionEnd + separatorLength
+        } else {
+            pictureStart = descriptionStart
+        }
+        guard pictureStart < range.upperBound else { return nil }
+        let imageData = Data(data[pictureStart..<range.upperBound])
+        guard !imageData.isEmpty else { return nil }
+        let mime = mimeType?.isEmpty == false ? mimeType! : "image/jpeg"
+        return "data:\(mime);base64,\(imageData.base64EncodedString())"
+    }
+
+    private static func encodedNullTerminator(in data: Data, range: Range<Int>, length: Int) -> Int? {
+        guard length > 0, range.lowerBound < range.upperBound else { return nil }
+        var offset = range.lowerBound
+        while offset + length <= range.upperBound {
+            if (0..<length).allSatisfy({ data[offset + $0] == 0 }) {
+                return offset
+            }
+            offset += 1
+        }
+        return nil
     }
 
     private static func frameHeader(in data: Data, at offset: Int, version: UInt8) -> (id: String, size: Int)? {

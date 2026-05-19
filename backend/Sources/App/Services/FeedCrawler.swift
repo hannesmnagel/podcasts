@@ -15,6 +15,7 @@ struct FeedCrawler: Sendable {
         if let lastModified = response.headers.first(name: .lastModified) { freshPodcast.lastModified = lastModified }
 
         let data = Data(buffer: body)
+        let feedChapterSets = FeedChapterExtractor().rssChapters(from: data, relativeTo: freshPodcast.feedURL)
         let result = FeedParser(data: data).parse()
         guard case .success(let parsed) = result else { throw Abort(.unprocessableEntity, reason: "Feed could not be parsed") }
 
@@ -35,7 +36,7 @@ struct FeedCrawler: Sendable {
             )
             freshPodcast.lastCrawledAt = Date()
             try await freshPodcast.save(on: app.db)
-            try await upsertRSSItems(rss.items ?? [], podcast: freshPodcast, on: app)
+            try await upsertRSSItems(rss.items ?? [], podcast: freshPodcast, chapterSets: feedChapterSets, on: app)
         case .atom(let atom):
             freshPodcast.title = atom.title ?? freshPodcast.title
             freshPodcast.description = firstNonEmpty(atom.subtitle?.value, freshPodcast.description)
@@ -57,7 +58,7 @@ struct FeedCrawler: Sendable {
         return headers
     }
 
-    private func upsertRSSItems(_ items: [RSSFeedItem], podcast: Podcast, on app: Application) async throws {
+    private func upsertRSSItems(_ items: [RSSFeedItem], podcast: Podcast, chapterSets: [String: FeedChapterSet], on app: Application) async throws {
         let podcastUUID = try podcast.requireID()
         for item in items {
             guard let title = item.title?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty,
@@ -83,6 +84,9 @@ struct FeedCrawler: Sendable {
             episode.publishedAt = item.pubDate
             episode.duration = item.iTunes?.iTunesDuration
             try await episode.save(on: app.db)
+            if let chapterSet = chapterSets[chapterKey(guid: guid, audioURL: audioURL)] ?? chapterSets["audio:\(audioURL)"] {
+                try await saveChapters(chapterSet, for: episode, on: app)
+            }
         }
     }
 
@@ -118,5 +122,37 @@ struct FeedCrawler: Sendable {
     private func absoluteURLString(_ value: String, relativeTo feedURL: String) -> String? {
         guard let feedURL = URL(string: feedURL) else { return value }
         return URL(string: value, relativeTo: feedURL)?.absoluteURL.absoluteString ?? value
+    }
+
+    private func chapterKey(guid: String?, audioURL: String) -> String {
+        if let guid = guid?.trimmingCharacters(in: .whitespacesAndNewlines), !guid.isEmpty {
+            return "guid:\(guid)"
+        }
+        return "audio:\(audioURL)"
+    }
+
+    private func saveChapters(_ chapterSet: FeedChapterSet, for episode: Episode, on app: Application) async throws {
+        let chapters: [FeedEpisodeChapter]
+        if chapterSet.chapters.count > 1 {
+            chapters = chapterSet.chapters
+        } else if let remoteURL = chapterSet.remoteURL {
+            guard let response = try? await app.client.get(URI(string: remoteURL)) else { return }
+            guard response.status == .ok, let body = response.body else { return }
+            chapters = FeedChapterExtractor().podcastChapters(from: Data(buffer: body), relativeTo: remoteURL)
+        } else {
+            return
+        }
+        guard chapters.count > 1 else { return }
+
+        let episodeID = try episode.requireID()
+        let existing = try await ChapterArtifact.query(on: app.db)
+            .filter(\.$episode.$id == episodeID)
+            .filter(\.$source == chapterSet.source)
+            .first()
+        let artifact = existing ?? ChapterArtifact()
+        artifact.$episode.id = episodeID
+        artifact.source = chapterSet.source
+        artifact.chaptersJSON = String(decoding: try JSONEncoder().encode(chapters), as: UTF8.self)
+        try await artifact.save(on: app.db)
     }
 }

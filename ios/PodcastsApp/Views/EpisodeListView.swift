@@ -1065,7 +1065,9 @@ final class ArtworkImageView: UIImageView {
 
     nonisolated private static func loadImage(url: URL, targetSize: CGSize, scale: CGFloat, minimumPixelDimension: CGFloat) async -> CGImage? {
         let data: Data?
-        if url.isFileURL {
+        if url.scheme == "data" {
+            data = dataURLImageData(url)
+        } else if url.isFileURL {
             data = try? Data(contentsOf: url)
         } else if let cachedURL = await LocalMediaCache.existingCachedFileURL(for: url) {
             data = try? Data(contentsOf: cachedURL)
@@ -1078,6 +1080,20 @@ final class ArtworkImageView: UIImageView {
         }
         guard let data else { return nil }
         return downsample(data: data, targetSize: targetSize, scale: scale, minimumPixelDimension: minimumPixelDimension)
+    }
+
+    nonisolated private static func dataURLImageData(_ url: URL) -> Data? {
+        let raw = url.absoluteString
+        guard raw.hasPrefix("data:"),
+              let comma = raw.firstIndex(of: ",") else {
+            return nil
+        }
+        let metadata = raw[..<comma].lowercased()
+        let payload = raw[raw.index(after: comma)...]
+        if metadata.contains(";base64") {
+            return Data(base64Encoded: String(payload))
+        }
+        return String(payload).removingPercentEncoding.flatMap { Data($0.utf8) }
     }
 
     nonisolated private static func downsample(data: Data, targetSize: CGSize, scale: CGFloat, minimumPixelDimension: CGFloat) -> CGImage? {

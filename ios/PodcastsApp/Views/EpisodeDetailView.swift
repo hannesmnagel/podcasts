@@ -236,9 +236,13 @@ final class EpisodeDetailViewController: UIViewController {
         button.titleLabel?.numberOfLines = 0
         button.addAction(UIAction { [weak self] _ in
             guard let self else { return }
+            FloatingDownloadHUD.shared.show(progressID: episode.stableID, title: episode.title)
             Task { [weak self] in
-                guard let self,
-                      let playableEpisode = await LibraryStore.playableDownloadedEpisode(for: episode, in: self.modelContext) else { return }
+                guard let self else { return }
+                guard let playableEpisode = await LibraryStore.playableDownloadedEpisode(for: episode, in: self.modelContext) else {
+                    self.showDownloadFailed()
+                    return
+                }
                 self.player.updateAutoSkipChapters(self.chapters)
                 self.player.play(
                     playableEpisode,
@@ -384,9 +388,13 @@ final class EpisodeDetailViewController: UIViewController {
             player.togglePlayPause()
             updateActionHeader()
         } else {
+            FloatingDownloadHUD.shared.show(progressID: episode.stableID, title: episode.title)
             Task { [weak self] in
-                guard let self,
-                      let playableEpisode = await LibraryStore.playableDownloadedEpisode(for: self.episode, in: self.modelContext) else { return }
+                guard let self else { return }
+                guard let playableEpisode = await LibraryStore.playableDownloadedEpisode(for: self.episode, in: self.modelContext) else {
+                    self.showDownloadFailed()
+                    return
+                }
                 self.player.updateAutoSkipChapters(self.chapters)
                 self.player.play(playableEpisode, at: LibraryStore.playbackPosition(for: playableEpisode, in: self.modelContext), artworkURL: self.artworkURL)
                 self.updateActionHeader()
@@ -404,7 +412,7 @@ final class EpisodeDetailViewController: UIViewController {
     }
 
     @objc private func shareEpisode() {
-        share(URL(string: episode.audioURL))
+        presentPodcastShareOptions(for: episode, in: modelContext, sourceView: view)
     }
 
     @objc private func openPodcast() {
@@ -425,8 +433,12 @@ final class EpisodeDetailViewController: UIViewController {
             observeDownloadProgress()
             updateActionHeader()
             Task {
-                await LibraryStore.downloadAudio(for: episode, in: modelContext)
-                await LibraryStore.alignTranscriptToDownloadedAudio(for: episode, in: modelContext)
+                let didDownload = await LibraryStore.downloadAudio(for: episode, in: modelContext)
+                if didDownload {
+                    await LibraryStore.alignTranscriptToDownloadedAudio(for: episode, in: modelContext)
+                } else {
+                    showDownloadFailed()
+                }
                 isDownloading = false
                 updateActionHeader()
             }
@@ -473,6 +485,16 @@ final class EpisodeDetailViewController: UIViewController {
 
     private func format(_ value: TimeInterval) -> String {
         TimeFormatting.playbackTime(value)
+    }
+
+    private func showDownloadFailed() {
+        let alert = UIAlertController(
+            title: "Download Failed",
+            message: "The episode audio could not be saved for playback. Try again on a stable connection.",
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        present(alert, animated: true)
     }
 }
 
@@ -614,9 +636,13 @@ private final class TranscriptTextViewController: UIViewController, UITableViewD
         if player.currentEpisode?.stableID == episode.stableID {
             player.seek(toTime: start)
         } else {
+            FloatingDownloadHUD.shared.show(progressID: episode.stableID, title: episode.title)
             Task { [weak self] in
-                guard let self,
-                      let playableEpisode = await LibraryStore.playableDownloadedEpisode(for: self.episode, in: self.modelContext) else { return }
+                guard let self else { return }
+                guard let playableEpisode = await LibraryStore.playableDownloadedEpisode(for: self.episode, in: self.modelContext) else {
+                    self.showDownloadFailed()
+                    return
+                }
                 self.player.play(playableEpisode, at: start, artworkURL: self.artworkURL)
             }
         }
@@ -624,6 +650,16 @@ private final class TranscriptTextViewController: UIViewController, UITableViewD
 
     private func format(_ value: TimeInterval) -> String {
         TimeFormatting.playbackTime(value)
+    }
+
+    private func showDownloadFailed() {
+        let alert = UIAlertController(
+            title: "Download Failed",
+            message: "The episode audio could not be saved for playback. Try again on a stable connection.",
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        present(alert, animated: true)
     }
 }
 

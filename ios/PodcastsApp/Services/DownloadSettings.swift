@@ -25,8 +25,32 @@ enum EpisodeDownloadPolicy: String, CaseIterable {
     }
 }
 
+enum CompletedDownloadCleanupPolicy: String, CaseIterable {
+    case manual
+    case afterPlaybackCompletes
+
+    var title: String {
+        switch self {
+        case .manual: "Manually"
+        case .afterPlaybackCompletes: "After Playback Completes"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .manual: "Keep downloads until you remove them."
+        case .afterPlaybackCompletes: "Delete the local audio file when an episode finishes."
+        }
+    }
+}
+
 enum DownloadSettings {
     private static let globalPolicyKey = "downloadSettings.globalPolicy"
+    private static let completedCleanupPolicyKey = "downloadSettings.completedCleanupPolicy"
+    private static let allowsBackgroundDownloadsKey = "downloadSettings.allowsBackgroundDownloads"
+    private static let allowsCellularDownloadsKey = "downloadSettings.allowsCellularDownloads"
+    private static let allowsLowDataModeDownloadsKey = "downloadSettings.allowsLowDataModeDownloads"
+    private static let preloadsNextEpisodeKey = "downloadSettings.preloadsNextEpisode"
 
     static var globalPolicy: EpisodeDownloadPolicy {
         get {
@@ -37,12 +61,46 @@ enum DownloadSettings {
         }
     }
 
+    static var completedCleanupPolicy: CompletedDownloadCleanupPolicy {
+        get {
+            UserDefaults.standard.string(forKey: completedCleanupPolicyKey).flatMap(CompletedDownloadCleanupPolicy.init(rawValue:)) ?? .manual
+        }
+        set {
+            UserDefaults.standard.set(newValue.rawValue, forKey: completedCleanupPolicyKey)
+        }
+    }
+
+    static var allowsBackgroundDownloads: Bool {
+        get { bool(forKey: allowsBackgroundDownloadsKey, defaultValue: true) }
+        set { UserDefaults.standard.set(newValue, forKey: allowsBackgroundDownloadsKey) }
+    }
+
+    static var allowsCellularDownloads: Bool {
+        get { bool(forKey: allowsCellularDownloadsKey, defaultValue: true) }
+        set { UserDefaults.standard.set(newValue, forKey: allowsCellularDownloadsKey) }
+    }
+
+    static var allowsLowDataModeDownloads: Bool {
+        get { bool(forKey: allowsLowDataModeDownloadsKey, defaultValue: false) }
+        set { UserDefaults.standard.set(newValue, forKey: allowsLowDataModeDownloadsKey) }
+    }
+
+    static var preloadsNextEpisode: Bool {
+        get { bool(forKey: preloadsNextEpisodeKey, defaultValue: true) }
+        set { UserDefaults.standard.set(newValue, forKey: preloadsNextEpisodeKey) }
+    }
+
     static func policy(for subscription: PodcastSubscription?) -> EpisodeDownloadPolicy {
         subscription?.downloadPolicyRawValue.flatMap(EpisodeDownloadPolicy.init(rawValue:)) ?? globalPolicy
     }
 
     static func setPolicy(_ policy: EpisodeDownloadPolicy?, for subscription: PodcastSubscription) {
         subscription.downloadPolicyRawValue = policy?.rawValue
+    }
+
+    private static func bool(forKey key: String, defaultValue: Bool) -> Bool {
+        guard UserDefaults.standard.object(forKey: key) != nil else { return defaultValue }
+        return UserDefaults.standard.bool(forKey: key)
     }
 }
 

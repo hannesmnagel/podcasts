@@ -85,8 +85,13 @@ enum LibraryStore {
     static func updatePlaybackState(episode: EpisodeDTO, elapsed: TimeInterval, duration: TimeInterval?, in context: ModelContext) {
         guard elapsed.isFinite, elapsed >= 0 else { return }
         let state = episodeState(for: episode, in: context) ?? makeEpisodeState(for: episode, in: context)
-        state.playbackPosition = elapsed
-        state.duration = duration ?? episode.duration ?? state.duration
+        let knownDuration = duration ?? episode.duration ?? state.duration
+        if let knownDuration, knownDuration > 0, elapsed >= max(0, knownDuration - 30) {
+            state.playbackPosition = knownDuration
+        } else {
+            state.playbackPosition = elapsed
+        }
+        state.duration = knownDuration
         state.lastListenedAt = .now
         UserDefaults.standard.set(episode.stableID, forKey: lastPlaybackEpisodeIDKey)
         try? context.save()
@@ -109,6 +114,11 @@ enum LibraryStore {
 
     static func finishNaturalPlayback(_ episode: EpisodeDTO, in context: ModelContext) {
         markPlayed(episode, in: context)
+
+        if DownloadSettings.completedCleanupPolicy == .afterPlaybackCompletes {
+            removeDownload(for: episode, in: context)
+            return
+        }
 
         guard let podcastStableID = episode.podcastStableID,
               let subscription = subscription(stableID: podcastStableID, in: context),
@@ -153,29 +163,49 @@ enum LibraryStore {
         episodeState(for: episode, in: context)?.isDeleted ?? false
     }
 
-    static func downloadAudio(for episode: EpisodeDTO, in context: ModelContext, progressID: String? = nil) async {
-        guard let remoteURL = URL(string: episode.audioURL) else { return }
+    @discardableResult
+    static func downloadAudio(for episode: EpisodeDTO, in context: ModelContext, progressID: String? = nil) async -> Bool {
+        guard let remoteURL = URL(string: episode.audioURL) else { return false }
         let state = episodeState(for: episode, in: context) ?? makeEpisodeState(for: episode, in: context)
         let progressID = progressID ?? episode.stableID
-        await DownloadProgressCenter.shared.begin(id: progressID, title: episode.title)
+        DownloadProgressCenter.shared.begin(id: progressID, title: episode.title)
         if remoteURL.isFileURL, FileManager.default.fileExists(atPath: remoteURL.path) {
             state.downloadedFileURL = remoteURL
             state.isDownloaded = true
             try? context.save()
-            return
+            return true
         }
-        if let localURL = try? await LocalMediaCache.cachedOrDownload(remoteURL, progressID: progressID) {
+
+        if let cachedURL = await LocalMediaCache.existingCachedFileURL(for: remoteURL) {
+            state.downloadedFileURL = cachedURL
+            state.isDownloaded = true
+            try? context.save()
+            DownloadProgressCenter.shared.finish(id: progressID)
+            return true
+        }
+
+        do {
+            let localURL = try await LocalMediaCache.cachedOrDownload(remoteURL, progressID: progressID)
             state.downloadedFileURL = localURL
             state.isDownloaded = true
             try? context.save()
+            return true
+        } catch {
+            DownloadProgressCenter.shared.fail(id: progressID)
+            #if DEBUG
+            print("[PodcastsDebug][Download] failed id=\(episode.stableID) url=\(episode.audioURL) error=\(error)")
+            #endif
+            return false
         }
     }
 
     static func playableDownloadedEpisode(for episode: EpisodeDTO, in context: ModelContext, progressID: String? = nil) async -> EpisodeDTO? {
         if let downloadedEpisode = downloadedEpisode(for: episode, in: context) { return downloadedEpisode }
 
+        guard await downloadAudio(for: episode, in: context, progressID: progressID) else {
+            return nil
+        }
         let state = episodeState(for: episode, in: context) ?? makeEpisodeState(for: episode, in: context)
-        await downloadAudio(for: episode, in: context, progressID: progressID)
         guard state.isDownloaded,
               let downloadedFileURL = state.downloadedFileURL,
               FileManager.default.fileExists(atPath: downloadedFileURL.path) else {
@@ -212,6 +242,33 @@ enum LibraryStore {
 
     static func removeDownloads(for episodes: [EpisodeDTO], in context: ModelContext) {
         episodes.forEach { removeDownload(for: $0, in: context) }
+    }
+
+    static func downloadPolicyTargets(for episodes: [EpisodeDTO], subscription: PodcastSubscription?, in context: ModelContext) -> [EpisodeDTO] {
+        let visible = visibleEpisodes(episodes, in: context)
+        switch DownloadSettings.policy(for: subscription) {
+        case .manual:
+            return []
+        case .latest:
+            return Array(visible.prefix(1))
+        case .unplayed:
+            return unplayedEpisodes(visible, in: context)
+        case .all:
+            return visible
+        }
+    }
+
+    static func applyDownloadPolicy(to episodes: [EpisodeDTO], subscription: PodcastSubscription?, in context: ModelContext) async -> Int {
+        let targets = downloadPolicyTargets(for: episodes, subscription: subscription, in: context)
+        let downloadedIDs = downloadedEpisodeIDs(for: targets, in: context)
+        var completed = 0
+        for episode in targets where !downloadedIDs.contains(episode.stableID) {
+            if await downloadAudio(for: episode, in: context, progressID: "policy-\(episode.stableID)") {
+                completed += 1
+            }
+            await Task.yield()
+        }
+        return completed
     }
 
     static func downloadedEpisodeIDs(for episodes: [EpisodeDTO], in context: ModelContext) -> Set<String> {

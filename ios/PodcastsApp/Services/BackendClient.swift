@@ -19,15 +19,16 @@ struct BackendClient: Sendable {
 
     func podcasts() async throws -> [PodcastDTO] { try await get("podcasts") }
 
-    func optimisticPodcast(feedURL: URL, title: String? = nil) -> PodcastDTO {
+    func optimisticPodcast(feedURL: URL, title: String? = nil, imageURL: String? = nil) -> PodcastDTO {
         let trimmedTitle = title?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedImageURL = imageURL?.trimmingCharacters(in: .whitespacesAndNewlines)
         return PodcastDTO(
             id: nil,
             stableID: StableID.podcastID(feedURL: feedURL),
             feedURL: feedURL.absoluteString,
             title: trimmedTitle?.isEmpty == false ? trimmedTitle! : feedURL.absoluteString,
             description: nil,
-            imageURL: nil
+            imageURL: trimmedImageURL?.isEmpty == false ? trimmedImageURL : nil
         )
     }
 
@@ -184,6 +185,22 @@ struct PodcastDTO: Codable, Identifiable, Hashable, Sendable {
         !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && description?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
             && imageURL?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+    }
+
+    func fillingMissingImageURL(_ fallback: String?) -> PodcastDTO {
+        let trimmedFallback = fallback?.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard imageURL?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false,
+              trimmedFallback?.isEmpty == false else {
+            return self
+        }
+        return PodcastDTO(
+            id: id,
+            stableID: stableID,
+            feedURL: feedURL,
+            title: title,
+            description: description,
+            imageURL: trimmedFallback
+        )
     }
 }
 

@@ -27,10 +27,11 @@ struct FeedCrawler: Sendable {
                 rss.iTunes?.iTunesSubtitle,
                 freshPodcast.description
             )
-            freshPodcast.imageURL = firstNonEmpty(
+            freshPodcast.imageURL = firstNonEmptyURL(
                 rss.iTunes?.iTunesImage?.attributes?.href,
                 rss.image?.url,
-                freshPodcast.imageURL
+                freshPodcast.imageURL,
+                relativeTo: freshPodcast.feedURL
             )
             freshPodcast.lastCrawledAt = Date()
             try await freshPodcast.save(on: app.db)
@@ -38,7 +39,7 @@ struct FeedCrawler: Sendable {
         case .atom(let atom):
             freshPodcast.title = atom.title ?? freshPodcast.title
             freshPodcast.description = firstNonEmpty(atom.subtitle?.value, freshPodcast.description)
-            freshPodcast.imageURL = firstNonEmpty(atom.logo, atom.icon, freshPodcast.imageURL)
+            freshPodcast.imageURL = firstNonEmptyURL(atom.logo, atom.icon, freshPodcast.imageURL, relativeTo: freshPodcast.feedURL)
             freshPodcast.lastCrawledAt = Date()
             try await freshPodcast.save(on: app.db)
             try await upsertAtomEntries(atom.entries ?? [], podcast: freshPodcast, on: app)
@@ -72,7 +73,13 @@ struct FeedCrawler: Sendable {
                 item.iTunes?.iTunesSubtitle
             )
             episode.audioURL = audioURL
-            episode.imageURL = item.iTunes?.iTunesImage?.attributes?.href
+            episode.imageURL = firstNonEmptyURL(
+                item.iTunes?.iTunesImage?.attributes?.href,
+                item.media?.mediaThumbnails?.first?.attributes?.url,
+                item.media?.mediaContents?.lazy.compactMap { $0.mediaThumbnails?.first?.attributes?.url }.first,
+                podcast.imageURL,
+                relativeTo: podcast.feedURL
+            )
             episode.publishedAt = item.pubDate
             episode.duration = item.iTunes?.iTunesDuration
             try await episode.save(on: app.db)
@@ -99,5 +106,17 @@ struct FeedCrawler: Sendable {
         values
             .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
             .first { !$0.isEmpty }
+    }
+
+    private func firstNonEmptyURL(_ values: String?..., relativeTo feedURL: String) -> String? {
+        values
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first { !$0.isEmpty }
+            .flatMap { absoluteURLString($0, relativeTo: feedURL) }
+    }
+
+    private func absoluteURLString(_ value: String, relativeTo feedURL: String) -> String? {
+        guard let feedURL = URL(string: feedURL) else { return value }
+        return URL(string: value, relativeTo: feedURL)?.absoluteURL.absoluteString ?? value
     }
 }

@@ -5,12 +5,19 @@ import ImageIO
 import MediaPlayer
 import UIKit
 
+struct SeekUndoAction: Equatable, Identifiable {
+    let id = UUID()
+    let from: TimeInterval
+    let to: TimeInterval
+}
+
 @MainActor
 final class PlayerController: ObservableObject {
     @Published private(set) var currentEpisode: EpisodeDTO?
     @Published private(set) var isPlaying = false
     @Published private(set) var elapsed: TimeInterval = 0
     @Published private(set) var duration: TimeInterval?
+    @Published private(set) var undoSeekAction: SeekUndoAction?
     @Published var speed: Float = Float(PlaybackSettings.globalSpeed) {
         didSet {
             let clamped = Float(PlaybackSettings.clampedSpeed(Double(speed)))
@@ -96,25 +103,32 @@ final class PlayerController: ObservableObject {
     }
 
     func seek(by seconds: TimeInterval) {
-        let current = player.currentTime().seconds
-        let targetSeconds = max(0, current + seconds)
-        elapsed = targetSeconds
-        player.seek(to: CMTime(seconds: targetSeconds, preferredTimescale: 600)) { [weak self] _ in
-            Task { @MainActor in self?.updateNowPlayingPlaybackState() }
-        }
+        let current = currentPlaybackSeconds
+        performSeek(to: current + seconds, from: current, resetAutoSkip: true, recordsUndo: true)
     }
 
     func seek(to fraction: Double) {
+        seek(to: fraction, from: nil)
+    }
+
+    func seek(to fraction: Double, from sourceSeconds: TimeInterval?) {
         guard let duration, duration.isFinite, duration > 0 else { return }
-        let targetSeconds = max(0, min(duration, duration * fraction))
-        elapsed = targetSeconds
-        player.seek(to: CMTime(seconds: targetSeconds, preferredTimescale: 600)) { [weak self] _ in
-            Task { @MainActor in self?.updateNowPlayingPlaybackState() }
-        }
+        performSeek(to: duration * fraction, from: sourceSeconds, resetAutoSkip: true, recordsUndo: true)
     }
 
     func seek(toTime seconds: TimeInterval) {
         seek(toTime: seconds, resetAutoSkip: true)
+    }
+
+    func undoSeek(_ action: SeekUndoAction) {
+        guard undoSeekAction?.id == action.id else { return }
+        undoSeekAction = nil
+        performSeek(to: action.from, resetAutoSkip: true, recordsUndo: false)
+    }
+
+    func dismissUndoSeek(_ action: SeekUndoAction) {
+        guard undoSeekAction?.id == action.id else { return }
+        undoSeekAction = nil
     }
 
     func updateAutoSkipChapters(_ chapters: [EpisodeChapterDTO]) {
@@ -129,9 +143,33 @@ final class PlayerController: ObservableObject {
     }
 
     private func seek(toTime seconds: TimeInterval, resetAutoSkip: Bool) {
-        let upperBound = duration ?? seconds
-        let targetSeconds = max(0, min(upperBound, seconds))
-        if resetAutoSkip { lastAutoSkippedChapterID = nil }
+        performSeek(to: seconds, resetAutoSkip: resetAutoSkip, recordsUndo: resetAutoSkip)
+    }
+
+    private var currentPlaybackSeconds: TimeInterval {
+        let current = player.currentTime().seconds
+        if current.isFinite {
+            return max(0, current)
+        }
+        return max(0, elapsed)
+    }
+
+    private func clampedPlaybackTime(_ seconds: TimeInterval) -> TimeInterval {
+        guard seconds.isFinite else { return max(0, elapsed) }
+        let lowerBounded = max(0, seconds)
+        guard let duration, duration.isFinite, duration > 0 else { return lowerBounded }
+        return min(duration, lowerBounded)
+    }
+
+    private func performSeek(to seconds: TimeInterval, from sourceSeconds: TimeInterval? = nil, resetAutoSkip: Bool, recordsUndo: Bool) {
+        let source = clampedPlaybackTime(sourceSeconds ?? currentPlaybackSeconds)
+        let targetSeconds = clampedPlaybackTime(seconds)
+        if resetAutoSkip {
+            lastAutoSkippedChapterID = nil
+        }
+        if recordsUndo, currentEpisode != nil, abs(targetSeconds - source) >= 0.5 {
+            undoSeekAction = SeekUndoAction(from: source, to: targetSeconds)
+        }
         elapsed = targetSeconds
         player.seek(to: CMTime(seconds: targetSeconds, preferredTimescale: 600)) { [weak self] _ in
             Task { @MainActor in self?.updateNowPlayingPlaybackState() }

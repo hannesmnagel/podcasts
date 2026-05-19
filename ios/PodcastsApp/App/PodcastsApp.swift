@@ -1,8 +1,11 @@
+import BackgroundTasks
 import SwiftData
 import UIKit
 
 @main
 final class PodcastsAppDelegate: UIResponder, UIApplicationDelegate {
+    private static let backgroundRefreshTaskIdentifier = "com.nagel.podcasts.refresh"
+
     let modelContainer: ModelContainer
     let player = PlayerController()
 
@@ -19,6 +22,72 @@ final class PodcastsAppDelegate: UIResponder, UIApplicationDelegate {
         let configuration = UISceneConfiguration(name: nil, sessionRole: connectingSceneSession.role)
         configuration.delegateClass = PodcastsSceneDelegate.self
         return configuration
+    }
+
+    func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
+        registerBackgroundTasks()
+        Self.configureBackgroundRefresh()
+        return true
+    }
+
+    static func configureBackgroundRefresh() {
+        BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: backgroundRefreshTaskIdentifier)
+        guard DownloadSettings.allowsBackgroundDownloads else { return }
+
+        let request = BGAppRefreshTaskRequest(identifier: backgroundRefreshTaskIdentifier)
+        request.earliestBeginDate = Date(timeIntervalSinceNow: 15 * 60)
+        try? BGTaskScheduler.shared.submit(request)
+    }
+
+    private func registerBackgroundTasks() {
+        BGTaskScheduler.shared.register(forTaskWithIdentifier: Self.backgroundRefreshTaskIdentifier, using: nil) { [weak self] task in
+            guard let self, let refreshTask = task as? BGAppRefreshTask else {
+                task.setTaskCompleted(success: false)
+                return
+            }
+            self.handleBackgroundRefresh(refreshTask)
+        }
+    }
+
+    private func handleBackgroundRefresh(_ task: BGAppRefreshTask) {
+        Self.configureBackgroundRefresh()
+        let refresh = Task { @MainActor in
+            await Self.refreshAndApplyDownloadPolicies(context: modelContainer.mainContext)
+        }
+        task.expirationHandler = {
+            refresh.cancel()
+        }
+        Task {
+            let success = await refresh.value
+            task.setTaskCompleted(success: success)
+        }
+    }
+
+    @MainActor
+    private static func refreshAndApplyDownloadPolicies(context: ModelContext) async -> Bool {
+        guard !NetworkMonitor.shared.isOffline else { return false }
+        let client = BackendClient()
+        var descriptor = FetchDescriptor<PodcastSubscription>(sortBy: [SortDescriptor(\.sortIndex)])
+        descriptor.includePendingChanges = true
+        let subscriptions = (try? context.fetch(descriptor)) ?? []
+        guard !subscriptions.isEmpty else { return false }
+
+        var changed = false
+        for subscription in subscriptions {
+            guard !Task.isCancelled else { return changed }
+            await client.requestPodcastCrawl(subscription.stableID)
+            guard let fetched = try? await client.episodes(for: subscription.stableID) else {
+                await Task.yield()
+                continue
+            }
+            await LibraryStore.cacheEpisodes(fetched, in: context)
+            let localEpisodes = LibraryStore.localEpisodes(forPodcastIDs: [subscription.stableID], in: context)
+            let downloaded = await LibraryStore.applyDownloadPolicy(to: localEpisodes, subscription: subscription, in: context)
+            changed = changed || downloaded > 0 || !fetched.isEmpty
+            await Task.yield()
+        }
+
+        return changed
     }
 }
 
@@ -42,5 +111,6 @@ final class PodcastsSceneDelegate: UIResponder, UIWindowSceneDelegate {
 
     func sceneDidEnterBackground(_ scene: UIScene) {
         (window?.rootViewController as? RootTabController)?.persistCurrentPlaybackState()
+        PodcastsAppDelegate.configureBackgroundRefresh()
     }
 }

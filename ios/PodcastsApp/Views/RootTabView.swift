@@ -42,6 +42,7 @@ final class RootTabController: UITabBarController {
         configureAutoplayNextEpisode()
         restorePlaybackState()
         observePlaybackPersistence()
+        observeSeekUndoHUD()
     }
 
     private func configureMiniPlayer() {
@@ -107,6 +108,7 @@ final class RootTabController: UITabBarController {
     }
 
     private func predownloadNextEpisodeIfNeeded(current episode: EpisodeDTO, elapsed: TimeInterval, duration: TimeInterval?) {
+        guard DownloadSettings.preloadsNextEpisode else { return }
         guard let duration, duration > 0 else { return }
         let remaining = duration - elapsed
         guard remaining <= 180 else { return }
@@ -138,6 +140,21 @@ final class RootTabController: UITabBarController {
                 guard let self, let episode else { return }
                 LibraryStore.updatePlaybackState(episode: episode, elapsed: elapsed, duration: duration, in: self.modelContext)
                 self.predownloadNextEpisodeIfNeeded(current: episode, elapsed: elapsed, duration: duration)
+            }
+            .store(in: &cancellables)
+    }
+
+    private func observeSeekUndoHUD() {
+        player.$undoSeekAction
+            .compactMap { $0 }
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] action in
+                guard let self else { return }
+                UndoSeekHUD.shared.show(
+                    action: action,
+                    undo: { [weak self] action in self?.player.undoSeek(action) },
+                    dismiss: { [weak self] action in self?.player.dismissUndoSeek(action) }
+                )
             }
             .store(in: &cancellables)
     }

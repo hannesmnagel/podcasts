@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		0CE58D717AF16B25555B7A6C /* AllPodcastsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E11208B42B85C23F3D8B31EC /* AllPodcastsView.swift */; };
+		0D51779E4FEA4C8593599F8A /* ApplePodcastsShareResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0D51779D4FEA4C8593599F8A /* ApplePodcastsShareResolver.swift */; };
 		11B660BA8BDDF2B15889D181 /* RootTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1045204BCEB2B486E3CADE53 /* RootTabView.swift */; };
 		12842DFED00EE4073329ADD9 /* TimeFormatting.swift in Sources */ = {isa = PBXBuildFile; fileRef = 48E51DE251937E0D9F12CFCD /* TimeFormatting.swift */; };
 		168118ECCED19189E112292B /* ChapterSkipRule.swift in Sources */ = {isa = PBXBuildFile; fileRef = 812BC4D227969BB6B156773E /* ChapterSkipRule.swift */; };
@@ -24,6 +25,7 @@
 		7835B9792CD74DC2D089AAF8 /* AllEpisodesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F97767F6F6864ACEC2591D01 /* AllEpisodesView.swift */; };
 		7F4055FA2C165A47AB812E1D /* PodcastSubscription.swift in Sources */ = {isa = PBXBuildFile; fileRef = 704BAB4A9425AA0B9C7144F3 /* PodcastSubscription.swift */; };
 		848A9A77C2EAFB63E3A8799B /* MiniPlayerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F8B729364B5024ABA775E3BB /* MiniPlayerView.swift */; };
+		8B4EEFB01F0703AB7ECEDC0C /* UndoSeekHUD.swift in Sources */ = {isa = PBXBuildFile; fileRef = 319380A47B9BC4B74F90DBEF /* UndoSeekHUD.swift */; };
 		9700A3E6A9A0F8E7D9B6C3F8 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 9A1C69FE1408B1115CF6F1C3 /* Assets.xcassets */; };
 		9FD06DC0C08EAC8AF5D3E1BB /* DownloadProgressListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 32FCD03B547CD9B4B56DABA8 /* DownloadProgressListView.swift */; };
 		A3CA3B482522F978DC36CFD5 /* EpisodeListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4BD4261567CDA01B0EA4D8E2 /* EpisodeListView.swift */; };
@@ -40,10 +42,12 @@
 
 /* Begin PBXFileReference section */
 		0AF8439699354FD0F2AE4753 /* NetworkMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkMonitor.swift; sourceTree = "<group>"; };
+		0D51779D4FEA4C8593599F8A /* ApplePodcastsShareResolver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ApplePodcastsShareResolver.swift; sourceTree = "<group>"; };
 		1045204BCEB2B486E3CADE53 /* RootTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootTabView.swift; sourceTree = "<group>"; };
 		246138886CAA032954429017 /* PlayerController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayerController.swift; sourceTree = "<group>"; };
 		26497049BF3384A069F81FA0 /* PodcastsApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PodcastsApp.swift; sourceTree = "<group>"; };
 		30397A1B5661ABE93A71ACFB /* SearchView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchView.swift; sourceTree = "<group>"; };
+		319380A47B9BC4B74F90DBEF /* UndoSeekHUD.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UndoSeekHUD.swift; sourceTree = "<group>"; };
 		32FCD03B547CD9B4B56DABA8 /* DownloadProgressListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DownloadProgressListView.swift; sourceTree = "<group>"; };
 		37195B288FF63CB94CF9FD15 /* BackendClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackendClient.swift; sourceTree = "<group>"; };
 		48E51DE251937E0D9F12CFCD /* TimeFormatting.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimeFormatting.swift; sourceTree = "<group>"; };
@@ -77,6 +81,7 @@
 			isa = PBXGroup;
 			children = (
 				637695869DF00B55472FA7AC /* ArtifactDataProcessor.swift */,
+				0D51779D4FEA4C8593599F8A /* ApplePodcastsShareResolver.swift */,
 				BC1F61CD6A1ADE3A6D7FB931 /* AudioFingerprint.swift */,
 				37195B288FF63CB94CF9FD15 /* BackendClient.swift */,
 				ECA6BB4992C4C3E331120520 /* DownloadSettings.swift */,
@@ -126,6 +131,7 @@
 				1045204BCEB2B486E3CADE53 /* RootTabView.swift */,
 				30397A1B5661ABE93A71ACFB /* SearchView.swift */,
 				A244DD49DF5DC289D6142935 /* ShowNotesText.swift */,
+				319380A47B9BC4B74F90DBEF /* UndoSeekHUD.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -242,6 +248,7 @@
 			files = (
 				7835B9792CD74DC2D089AAF8 /* AllEpisodesView.swift in Sources */,
 				0CE58D717AF16B25555B7A6C /* AllPodcastsView.swift in Sources */,
+				0D51779E4FEA4C8593599F8A /* ApplePodcastsShareResolver.swift in Sources */,
 				5C027FBB4C4DC63177A7075F /* ArtifactDataProcessor.swift in Sources */,
 				CCAB1B580940769F80DFBECA /* AudioFingerprint.swift in Sources */,
 				D33149ACB7F6342B1E389034 /* BackendClient.swift in Sources */,
@@ -268,6 +275,7 @@
 				5FBDBEF3168BE8B11187DB85 /* ShowNotesProcessor.swift in Sources */,
 				60DC834050ABDFAD3E736221 /* ShowNotesText.swift in Sources */,
 				12842DFED00EE4073329ADD9 /* TimeFormatting.swift in Sources */,
+				8B4EEFB01F0703AB7ECEDC0C /* UndoSeekHUD.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -337,7 +345,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 24;
+				CURRENT_PROJECT_VERSION = 30;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				INFOPLIST_FILE = ios/PodcastsApp/Info.plist;
 				INFOPLIST_KEY_BackendBaseURL = "https://podcasts.hannesnagel.com";
@@ -362,7 +370,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 24;
+				CURRENT_PROJECT_VERSION = 30;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				INFOPLIST_FILE = ios/PodcastsApp/Info.plist;
 				INFOPLIST_KEY_BackendBaseURL = "https://podcasts.hannesnagel.com";

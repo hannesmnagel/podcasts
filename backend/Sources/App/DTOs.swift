@@ -39,7 +39,7 @@ struct EpisodeResponse: Content {
         self.title = episode.title
         self.summary = episode.summary
         self.audioURL = episode.audioURL
-        self.imageURL = episode.imageURL
+        self.imageURL = episode.imageURL ?? episode.$podcast.value?.imageURL
         self.publishedAt = episode.publishedAt
         self.duration = episode.duration
     }

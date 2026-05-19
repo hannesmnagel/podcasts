@@ -264,13 +264,13 @@ final class SearchViewController: UITableViewController, UISearchResultsUpdating
             addingFeedURL = nil
             tableView.reloadData()
         }
-        let placeholder = client.optimisticPodcast(feedURL: url, title: podcast.title)
+        let placeholder = client.optimisticPodcast(feedURL: url, title: podcast.title, imageURL: podcast.artworkURL)
         LibraryStore.subscribe(to: placeholder, in: modelContext)
         loadSubscriptions()
 
         do {
             let added = try await client.addPodcast(feedURL: url)
-            let addedPodcast = await client.hydratedPodcast(afterAdding: added)
+            let addedPodcast = await client.hydratedPodcast(afterAdding: added).fillingMissingImageURL(podcast.artworkURL)
             LibraryStore.subscribe(to: addedPodcast, in: modelContext)
             loadSubscriptions()
             await search(query.trimmingCharacters(in: .whitespacesAndNewlines))
@@ -379,12 +379,26 @@ final class SearchViewController: UITableViewController, UISearchResultsUpdating
         if player.currentEpisode?.stableID == episode.stableID {
             player.togglePlayPause()
         } else {
+            FloatingDownloadHUD.shared.show(progressID: episode.stableID, title: episode.title)
             Task { [weak self] in
-                guard let self,
-                      let playableEpisode = await LibraryStore.playableDownloadedEpisode(for: episode, in: self.modelContext) else { return }
+                guard let self else { return }
+                guard let playableEpisode = await LibraryStore.playableDownloadedEpisode(for: episode, in: self.modelContext) else {
+                    self.showDownloadFailed(for: episode)
+                    return
+                }
                 self.player.play(playableEpisode, at: LibraryStore.playbackPosition(for: playableEpisode, in: self.modelContext), artworkURL: LibraryStore.localArtworkURL(for: playableEpisode, in: self.modelContext))
             }
         }
+    }
+
+    private func showDownloadFailed(for episode: EpisodeDTO) {
+        let alert = UIAlertController(
+            title: "Download Failed",
+            message: "The episode audio could not be saved for playback. Try again on a stable connection.",
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        present(alert, animated: true)
     }
 
     private func rssFeedURL(from value: String) -> URL? {

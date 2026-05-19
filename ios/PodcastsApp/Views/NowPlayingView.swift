@@ -24,6 +24,7 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
     private var artifactLoadTask: Task<Void, Never>?
     private var didSetInitialMediaPage = false
     private var hasInteractedWithMediaPager = false
+    private var progressSeekStart: TimeInterval?
 
     var showEpisodeDetails: ((EpisodeDTO) -> Void)?
     var showPodcast: ((EpisodeDTO) -> Void)?
@@ -186,9 +187,15 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
 
         progressControl.translatesAutoresizingMaskIntoConstraints = false
         progressControl.valueChanged = { [weak self] value in
-            self?.player.seek(to: value)
+            guard let self else { return }
+            self.player.seek(to: value, from: self.progressSeekStart)
         }
         progressControl.trackingChanged = { [weak self] isTracking in
+            if isTracking {
+                self?.progressSeekStart = self?.player.elapsed
+            } else {
+                self?.progressSeekStart = nil
+            }
             self?.progressHeightConstraint?.constant = isTracking ? 48 : 34
             UIView.animate(withDuration: 0.18) {
                 self?.view.layoutIfNeeded()
@@ -625,9 +632,13 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
         button.titleLabel?.numberOfLines = 0
         button.addAction(UIAction { [weak self] _ in
             guard let self else { return }
+            FloatingDownloadHUD.shared.show(progressID: episode.stableID, title: episode.title)
             Task { [weak self] in
-                guard let self,
-                      let playableEpisode = await LibraryStore.playableDownloadedEpisode(for: episode, in: self.modelContext) else { return }
+                guard let self else { return }
+                guard let playableEpisode = await LibraryStore.playableDownloadedEpisode(for: episode, in: self.modelContext) else {
+                    self.showDownloadFailed()
+                    return
+                }
                 self.player.play(
                     playableEpisode,
                     at: chapter.start,
@@ -735,7 +746,7 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
             },
             UIAction(title: "Share", image: UIImage(systemName: "square.and.arrow.up")) { [weak self] _ in
                 guard let self, let episode = episodeProvider() else { return }
-                self.share(URL(string: episode.audioURL))
+                self.presentPodcastShareOptions(for: episode, in: self.modelContext)
             },
             UIAction(title: "Remove Download", image: UIImage(systemName: "trash"), attributes: .destructive) { [weak self] _ in
                 guard let self, let episode = episodeProvider() else { return }
@@ -968,6 +979,16 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
 
     private func showErrorMessage(_ message: String) {
         let alert = UIAlertController(title: "Couldn’t Add Rule", message: message, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        present(alert, animated: true)
+    }
+
+    private func showDownloadFailed() {
+        let alert = UIAlertController(
+            title: "Download Failed",
+            message: "The episode audio could not be saved for playback. Try again on a stable connection.",
+            preferredStyle: .alert
+        )
         alert.addAction(UIAlertAction(title: "OK", style: .default))
         present(alert, animated: true)
     }

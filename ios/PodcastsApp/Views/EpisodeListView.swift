@@ -187,24 +187,41 @@ class EpisodeListViewController: UITableViewController {
         let episode = visibleEpisodeSnapshot[indexPath.row]
         return UIContextMenuConfiguration(actionProvider: { [weak self] _ in
             guard let self else { return nil }
-            return UIMenu(children: [
+            let isDownloaded = self.downloadedEpisodeIDs.contains(episode.stableID)
+            var actions: [UIMenuElement] = [
                 UIAction(title: "Play", image: UIImage(systemName: "play.fill")) { _ in self.play(episode) },
                 UIAction(title: self.playedEpisodeIDs.contains(episode.stableID) ? "Mark as Unplayed" : "Mark as Played", image: UIImage(systemName: "checkmark.circle")) { _ in self.togglePlayed(episode) },
-                UIAction(title: "Share Episode Link", image: UIImage(systemName: "square.and.arrow.up")) { _ in self.share(URL(string: episode.audioURL)) },
-                UIAction(title: "Download Episode", image: UIImage(systemName: "arrow.down.circle")) { _ in
+                UIAction(title: "Share Apple Podcasts Link", image: UIImage(systemName: "square.and.arrow.up")) { _ in self.shareApplePodcastsLink(for: episode, in: self.modelContext) }
+            ]
+            if self.downloadedAudioFileURL(for: episode, in: self.modelContext) != nil {
+                actions.append(UIAction(title: "Share Audio File", image: UIImage(systemName: "waveform")) { _ in
+                    self.shareDownloadedAudioFile(for: episode, in: self.modelContext)
+                })
+            }
+            if isDownloaded {
+                actions.append(UIAction(title: "Remove Download", image: UIImage(systemName: "trash"), attributes: .destructive) { _ in
+                    LibraryStore.removeDownload(for: episode, in: self.modelContext)
+                    self.downloadedEpisodeIDs.remove(episode.stableID)
+                    self.tableView.reloadData()
+                })
+            } else {
+                actions.append(UIAction(title: "Download Episode", image: UIImage(systemName: "arrow.down.circle")) { _ in
                     self.showProgressFooter(for: episode.stableID)
                     Task {
                         await LibraryStore.downloadAudio(for: episode, in: self.modelContext)
                         self.refreshEpisodeStateSets()
                         self.tableView.reloadData()
                     }
-                },
-                UIAction(title: "Remove Download", image: UIImage(systemName: "trash"), attributes: .destructive) { _ in
-                    LibraryStore.removeDownload(for: episode, in: self.modelContext)
-                    self.downloadedEpisodeIDs.remove(episode.stableID)
-                    self.tableView.reloadData()
-                }
-            ])
+                })
+            }
+            actions.append(UIAction(title: "Hide Episode", image: UIImage(systemName: "eye.slash"), attributes: .destructive) { _ in
+                LibraryStore.markDeleted(episode, in: self.modelContext)
+                self.refreshEpisodeStateSets()
+                self.refreshVisibleEpisodeSnapshot()
+                self.tableView.reloadData()
+                self.updateEmptyState()
+            })
+            return UIMenu(children: actions)
         })
     }
 
@@ -255,27 +272,31 @@ class EpisodeListViewController: UITableViewController {
     }
 
     private func podcastOptionsMenu() -> UIMenu {
-        UIMenu(children: [
-            UIAction(title: "Mark All Played", image: UIImage(systemName: "checkmark.circle")) { [weak self] _ in
+        let hasEpisodes = !visibleEpisodeSnapshot.isEmpty
+        let hasDownloads = !downloadedEpisodeIDs.isEmpty
+        let hasHiddenEpisodes = !deletedEpisodeIDs.isEmpty
+        let episodeActionAttributes: UIMenuElement.Attributes = hasEpisodes ? [] : .disabled
+        return UIMenu(children: [
+            UIAction(title: "Mark All Played", image: UIImage(systemName: "checkmark.circle"), attributes: episodeActionAttributes) { [weak self] _ in
                 self?.markAllPlayed()
             },
-            UIAction(title: "Mark All Unplayed", image: UIImage(systemName: "circle")) { [weak self] _ in
+            UIAction(title: "Mark All Unplayed", image: UIImage(systemName: "circle"), attributes: episodeActionAttributes) { [weak self] _ in
                 self?.markAllUnplayed()
             },
-            UIAction(title: "Download All Episodes", image: UIImage(systemName: "arrow.down.circle")) { [weak self] _ in
+            UIAction(title: "Download All Episodes", image: UIImage(systemName: "arrow.down.circle"), attributes: episodeActionAttributes) { [weak self] _ in
                 self?.downloadAllVisible()
             },
-            UIAction(title: "Remove All Downloads", image: UIImage(systemName: "trash"), attributes: .destructive) { [weak self] _ in
-                self?.removeAllDownloads()
+            UIAction(title: "Remove All Downloads", image: UIImage(systemName: "trash"), attributes: hasDownloads ? .destructive : [.destructive, .disabled]) { [weak self] _ in
+                self?.confirmRemoveAllDownloads()
             },
-            UIAction(title: "Restore Hidden Episodes", image: UIImage(systemName: "arrow.uturn.backward")) { [weak self] _ in
+            UIAction(title: "Restore Hidden Episodes", image: UIImage(systemName: "arrow.uturn.backward"), attributes: hasHiddenEpisodes ? [] : .disabled) { [weak self] _ in
                 self?.restoreDeletedEpisodes()
             },
             UIAction(title: "Download Settings", image: UIImage(systemName: "gearshape")) { [weak self] _ in
                 self?.showPodcastDownloadSettings()
             },
             UIAction(title: "Unfollow Podcast", image: UIImage(systemName: "minus.circle"), attributes: .destructive) { [weak self] _ in
-                self?.unfollowPodcast()
+                self?.confirmUnfollowPodcast()
             }
         ])
     }
@@ -284,8 +305,11 @@ class EpisodeListViewController: UITableViewController {
         guard case .podcast = mode else { return }
         podcastHeaderView.configure(subscription: subscription)
         podcastHeaderView.settingsTapped = { [weak self] in self?.showPodcastDownloadSettings() }
-        podcastHeaderView.followTapped = { [weak self] in self?.unfollowPodcast() }
-        podcastHeaderView.shareTapped = { [weak self] in self?.share(self?.subscription?.feedURL) }
+        podcastHeaderView.followTapped = { [weak self] in self?.confirmUnfollowPodcast() }
+        podcastHeaderView.shareTapped = { [weak self] in
+            guard let self, let subscription = self.subscription else { return }
+            self.shareApplePodcastsLink(for: subscription)
+        }
         tableView.tableHeaderView = podcastHeaderView
         updatePodcastHeaderSize()
     }
@@ -445,15 +469,29 @@ class EpisodeListViewController: UITableViewController {
         if player.currentEpisode?.stableID == episode.stableID {
             player.togglePlayPause()
         } else {
+            FloatingDownloadHUD.shared.show(progressID: episode.stableID, title: episode.title)
             Task { [weak self] in
-                guard let self,
-                      let playableEpisode = await LibraryStore.playableDownloadedEpisode(for: episode, in: self.modelContext) else { return }
+                guard let self else { return }
+                guard let playableEpisode = await LibraryStore.playableDownloadedEpisode(for: episode, in: self.modelContext) else {
+                    self.showDownloadFailed(for: episode)
+                    return
+                }
                 let start = LibraryStore.playbackPosition(for: playableEpisode, in: self.modelContext)
                 self.player.play(playableEpisode, at: start, artworkURL: LibraryStore.localArtworkURL(for: playableEpisode, in: self.modelContext))
                 self.refreshEpisodeStateSets()
                 self.tableView.reloadData()
             }
         }
+    }
+
+    private func showDownloadFailed(for episode: EpisodeDTO) {
+        let alert = UIAlertController(
+            title: "Download Failed",
+            message: "The episode audio could not be saved for playback. Try again on a stable connection.",
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        present(alert, animated: true)
     }
 
     private func togglePlayed(_ episode: EpisodeDTO) {
@@ -614,12 +652,21 @@ class EpisodeListViewController: UITableViewController {
         let targets = visibleEpisodeSnapshot
         Task {
             for episode in targets {
-                await LibraryStore.downloadAudio(for: episode, in: modelContext)
+                await LibraryStore.downloadAudio(for: episode, in: modelContext, progressID: "policy-\(episode.stableID)")
                 await Task.yield()
             }
             refreshEpisodeStateSets()
             tableView.reloadData()
         }
+    }
+
+    private func confirmRemoveAllDownloads() {
+        let alert = UIAlertController(title: "Remove Downloads?", message: "This removes local audio files for this podcast. Episodes stay in your library.", preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        alert.addAction(UIAlertAction(title: "Remove", style: .destructive) { [weak self] _ in
+            self?.removeAllDownloads()
+        })
+        present(alert, animated: true)
     }
 
     private func removeAllDownloads() {
@@ -644,6 +691,9 @@ class EpisodeListViewController: UITableViewController {
     private func showPodcastDownloadSettings() {
         guard let subscription else { return }
         let controller = DownloadSettingsViewController(subscription: subscription)
+        controller.policyDidChange = { [weak self] in
+            Task { await self?.applyDownloadPolicyIfNeeded() }
+        }
         controller.modalPresentationStyle = .pageSheet
         if let sheet = controller.sheetPresentationController {
             sheet.detents = [.medium()]
@@ -661,23 +711,7 @@ class EpisodeListViewController: UITableViewController {
 
     private func applyDownloadPolicyIfNeeded() async {
         guard case .podcast = mode else { return }
-        let policy = DownloadSettings.policy(for: subscription)
-        let targets: [EpisodeDTO]
-        switch policy {
-        case .manual:
-            return
-        case .latest:
-            targets = Array(visibleEpisodeSnapshot.prefix(1))
-        case .unplayed:
-            targets = visibleEpisodeSnapshot.filter { !playedEpisodeIDs.contains($0.stableID) }
-        case .all:
-            targets = visibleEpisodeSnapshot
-        }
-
-        for episode in targets where !downloadedEpisodeIDs.contains(episode.stableID) {
-            await LibraryStore.downloadAudio(for: episode, in: modelContext, progressID: "policy-\(episode.stableID)")
-            await Task.yield()
-        }
+        _ = await LibraryStore.applyDownloadPolicy(to: episodes, subscription: subscription, in: modelContext)
         refreshEpisodeStateSets()
         tableView.reloadData()
     }
@@ -713,6 +747,17 @@ class EpisodeListViewController: UITableViewController {
         guard let subscription else { return }
         LibraryStore.unsubscribe(subscription, in: modelContext)
         navigationController?.popViewController(animated: true)
+    }
+
+    private func confirmUnfollowPodcast() {
+        guard let subscription else { return }
+        let title = subscription.title.isEmpty ? "this podcast" : subscription.title
+        let alert = UIAlertController(title: "Unfollow Podcast?", message: "This removes \(title) and its saved episode data from your library.", preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        alert.addAction(UIAlertAction(title: "Unfollow", style: .destructive) { [weak self] _ in
+            self?.unfollowPodcast()
+        })
+        present(alert, animated: true)
     }
 
     private var isPodcastMode: Bool {
@@ -1101,6 +1146,6 @@ extension UIViewController {
 
     func share(_ url: URL?) {
         guard let url else { return }
-        present(UIActivityViewController(activityItems: [url], applicationActivities: nil), animated: true)
+        shareItems([url])
     }
 }

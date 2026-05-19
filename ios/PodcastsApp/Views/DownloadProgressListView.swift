@@ -1,6 +1,128 @@
 import Combine
 import UIKit
 
+@MainActor
+final class FloatingDownloadHUD {
+    static let shared = FloatingDownloadHUD()
+
+    private var container: UIVisualEffectView?
+    private var titleLabel: UILabel?
+    private var detailLabel: UILabel?
+    private var progressView: UIProgressView?
+    private var cancellable: AnyCancellable?
+    private var currentProgressID: String?
+
+    private init() {}
+
+    func show(progressID: String, title: String?) {
+        currentProgressID = progressID
+        installIfNeeded()
+        titleLabel?.text = title?.isEmpty == false ? title : "Preparing episode"
+        detailLabel?.text = "Preparing download..."
+        progressView?.setProgress(0, animated: false)
+        container?.alpha = 0
+        UIView.animate(withDuration: 0.18) {
+            self.container?.alpha = 1
+        }
+
+        cancellable = DownloadProgressCenter.shared.$progresses
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] progresses in
+                self?.update(progresses[progressID])
+            }
+
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(2))
+            guard self.currentProgressID == progressID,
+                  DownloadProgressCenter.shared.progresses[progressID] == nil else {
+                return
+            }
+            self.hide()
+        }
+    }
+
+    private func installIfNeeded() {
+        guard container == nil, let window = Self.keyWindow else { return }
+
+        let blur = UIBlurEffect(style: .systemMaterial)
+        let hud = UIVisualEffectView(effect: blur)
+        hud.translatesAutoresizingMaskIntoConstraints = false
+        hud.layer.cornerRadius = 18
+        hud.layer.cornerCurve = .continuous
+        hud.clipsToBounds = true
+
+        let title = UILabel()
+        title.font = .preferredFont(forTextStyle: .headline)
+        title.adjustsFontForContentSizeCategory = true
+        title.numberOfLines = 2
+
+        let detail = UILabel()
+        detail.font = .preferredFont(forTextStyle: .footnote)
+        detail.adjustsFontForContentSizeCategory = true
+        detail.textColor = .secondaryLabel
+
+        let progress = UIProgressView(progressViewStyle: .default)
+        progress.tintColor = .systemOrange
+
+        let stack = UIStackView(arrangedSubviews: [title, detail, progress])
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        stack.axis = .vertical
+        stack.spacing = 8
+        hud.contentView.addSubview(stack)
+        window.addSubview(hud)
+
+        NSLayoutConstraint.activate([
+            hud.leadingAnchor.constraint(equalTo: window.safeAreaLayoutGuide.leadingAnchor, constant: 18),
+            hud.trailingAnchor.constraint(equalTo: window.safeAreaLayoutGuide.trailingAnchor, constant: -18),
+            hud.bottomAnchor.constraint(equalTo: window.safeAreaLayoutGuide.bottomAnchor, constant: -18),
+            stack.leadingAnchor.constraint(equalTo: hud.contentView.leadingAnchor, constant: 16),
+            stack.trailingAnchor.constraint(equalTo: hud.contentView.trailingAnchor, constant: -16),
+            stack.topAnchor.constraint(equalTo: hud.contentView.topAnchor, constant: 14),
+            stack.bottomAnchor.constraint(equalTo: hud.contentView.bottomAnchor, constant: -14)
+        ])
+
+        container = hud
+        titleLabel = title
+        detailLabel = detail
+        progressView = progress
+    }
+
+    private func update(_ progress: DownloadProgress?) {
+        guard let progress else { return }
+        titleLabel?.text = progress.title ?? "Episode download"
+        detailLabel?.text = progress.isFinished ? "Download complete" : "Downloading \(progress.percentText)"
+        progressView?.setProgress(Float(progress.fractionCompleted), animated: true)
+        if progress.isFinished {
+            Task { @MainActor in
+                try? await Task.sleep(for: .seconds(1.2))
+                self.hide()
+            }
+        }
+    }
+
+    private func hide() {
+        currentProgressID = nil
+        cancellable = nil
+        guard let container else { return }
+        UIView.animate(withDuration: 0.18, animations: {
+            container.alpha = 0
+        }, completion: { _ in
+            container.removeFromSuperview()
+        })
+        self.container = nil
+        titleLabel = nil
+        detailLabel = nil
+        progressView = nil
+    }
+
+    private static var keyWindow: UIWindow? {
+        UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows)
+            .first { $0.isKeyWindow }
+    }
+}
+
 final class DownloadProgressListViewController: UITableViewController {
     private var progresses: [DownloadProgress] = []
     private var cancellable: AnyCancellable?

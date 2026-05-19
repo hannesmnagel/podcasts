@@ -107,9 +107,7 @@ final class AllPodcastsViewController: UITableViewController, UIDocumentPickerDe
         guard !tableView.isEditing else { return nil }
         let subscription = subscriptions[indexPath.row]
         let delete = UIContextualAction(style: .destructive, title: "Unfollow") { [weak self] _, _, done in
-            guard let self else { return done(false) }
-            LibraryStore.unsubscribe(subscription, in: self.modelContext)
-            self.load()
+            self?.confirmUnfollow(subscription)
             done(true)
         }
         return UISwipeActionsConfiguration(actions: [delete])
@@ -121,11 +119,10 @@ final class AllPodcastsViewController: UITableViewController, UIDocumentPickerDe
         return UIContextMenuConfiguration(actionProvider: { [weak self] _ in
             guard let self else { return nil }
             return UIMenu(children: [
-                UIAction(title: "Share Feed", image: UIImage(systemName: "square.and.arrow.up")) { _ in self.share(subscription.feedURL) },
+                UIAction(title: "Share Apple Podcasts Link", image: UIImage(systemName: "square.and.arrow.up")) { _ in self.shareApplePodcastsLink(for: subscription) },
                 UIAction(title: "Download Settings", image: UIImage(systemName: "gearshape")) { _ in self.showDownloadSettings(for: subscription) },
                 UIAction(title: "Unfollow Podcast", image: UIImage(systemName: "minus.circle"), attributes: .destructive) { _ in
-                    LibraryStore.unsubscribe(subscription, in: self.modelContext)
-                    self.load()
+                    self.confirmUnfollow(subscription)
                 }
             ])
         })
@@ -238,13 +235,34 @@ final class AllPodcastsViewController: UITableViewController, UIDocumentPickerDe
 
     private func presentDownloadSettings(subscription: PodcastSubscription?) {
         let controller = DownloadSettingsViewController(subscription: subscription)
+        controller.policyDidChange = { [weak self, weak subscription] in
+            guard let self, let subscription else { return }
+            Task { await self.applyDownloadPolicy(for: subscription) }
+        }
         presentSettingsController(controller)
+    }
+
+    private func confirmUnfollow(_ subscription: PodcastSubscription) {
+        let title = subscription.title.isEmpty ? "this podcast" : subscription.title
+        let alert = UIAlertController(title: "Unfollow Podcast?", message: "This removes \(title) and its saved episode data from your library.", preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        alert.addAction(UIAlertAction(title: "Unfollow", style: .destructive) { [weak self] _ in
+            guard let self else { return }
+            LibraryStore.unsubscribe(subscription, in: self.modelContext)
+            self.load()
+        })
+        present(alert, animated: true)
+    }
+
+    private func applyDownloadPolicy(for subscription: PodcastSubscription) async {
+        let episodes = LibraryStore.localEpisodes(forPodcastIDs: [subscription.stableID], in: modelContext)
+        _ = await LibraryStore.applyDownloadPolicy(to: episodes, subscription: subscription, in: modelContext)
     }
 
     private func presentSettingsController(_ controller: UIViewController) {
         controller.modalPresentationStyle = .pageSheet
         if let sheet = controller.sheetPresentationController {
-            sheet.detents = [.medium()]
+            sheet.detents = [.medium(), .large()]
             sheet.prefersGrabberVisible = true
             sheet.preferredCornerRadius = 28
         }
@@ -273,6 +291,12 @@ final class AppSettingsViewController: UITableViewController {
     private enum Row: Int, CaseIterable {
         case importOPML
         case globalDownloads
+        case completedDownloads
+        case backgroundDownloads
+        case cellularDownloads
+        case lowDataModeDownloads
+        case preloadNextEpisode
+        case applyDownloadPolicies
         case chapterSkips
         case seekBack
         case seekForward
@@ -321,6 +345,7 @@ final class AppSettingsViewController: UITableViewController {
         let cell = tableView.dequeueReusableCell(withIdentifier: "Cell", for: indexPath)
         cell.accessoryView = nil
         cell.accessoryType = .none
+        cell.selectionStyle = .default
         guard indexPath.section == 0, let row = Row(rawValue: indexPath.row) else {
             var configuration = UIListContentConfiguration.subtitleCell()
             configuration.text = statusText
@@ -339,6 +364,34 @@ final class AppSettingsViewController: UITableViewController {
         case .globalDownloads:
             configuration.text = "Default Download Policy"
             configuration.secondaryText = DownloadSettings.globalPolicy.title
+            cell.accessoryType = .disclosureIndicator
+        case .completedDownloads:
+            configuration.text = "Finished Downloads"
+            configuration.secondaryText = DownloadSettings.completedCleanupPolicy.title
+            cell.accessoryType = .disclosureIndicator
+        case .backgroundDownloads:
+            configuration.text = "Background Downloads"
+            configuration.secondaryText = "Refresh feeds and apply download policies in the background."
+            cell.accessoryView = makeSwitch(isOn: DownloadSettings.allowsBackgroundDownloads, action: #selector(backgroundDownloadsSwitchChanged(_:)))
+            cell.selectionStyle = .none
+        case .cellularDownloads:
+            configuration.text = "Download Over Cellular"
+            configuration.secondaryText = "Allow episode audio downloads on cellular or hotspot connections."
+            cell.accessoryView = makeSwitch(isOn: DownloadSettings.allowsCellularDownloads, action: #selector(cellularDownloadsSwitchChanged(_:)))
+            cell.selectionStyle = .none
+        case .lowDataModeDownloads:
+            configuration.text = "Low Data Mode Downloads"
+            configuration.secondaryText = "Allow downloads when the current network is constrained."
+            cell.accessoryView = makeSwitch(isOn: DownloadSettings.allowsLowDataModeDownloads, action: #selector(lowDataModeDownloadsSwitchChanged(_:)))
+            cell.selectionStyle = .none
+        case .preloadNextEpisode:
+            configuration.text = "Preload Next Episode"
+            configuration.secondaryText = "Start saving the next unplayed episode near the end of playback."
+            cell.accessoryView = makeSwitch(isOn: DownloadSettings.preloadsNextEpisode, action: #selector(preloadNextEpisodeSwitchChanged(_:)))
+            cell.selectionStyle = .none
+        case .applyDownloadPolicies:
+            configuration.text = "Apply Download Policies Now"
+            configuration.secondaryText = "Download missing episodes for your current podcast policies."
             cell.accessoryType = .disclosureIndicator
         case .chapterSkips:
             configuration.text = "Chapter Skip Rules"
@@ -366,7 +419,17 @@ final class AppSettingsViewController: UITableViewController {
             importOPML?()
         case .globalDownloads:
             let controller = DownloadSettingsViewController(subscription: nil)
+            controller.policyDidChange = { [weak self] in
+                Task { await self?.applyDownloadPoliciesNow() }
+            }
             navigationController?.pushViewController(controller, animated: true)
+        case .completedDownloads:
+            let controller = CompletedDownloadCleanupViewController()
+            navigationController?.pushViewController(controller, animated: true)
+        case .applyDownloadPolicies:
+            Task { await applyDownloadPoliciesNow() }
+        case .backgroundDownloads, .cellularDownloads, .lowDataModeDownloads, .preloadNextEpisode:
+            break
         case .chapterSkips:
             let controller = ChapterSkipRulesViewController()
             navigationController?.pushViewController(controller, animated: true)
@@ -413,6 +476,50 @@ final class AppSettingsViewController: UITableViewController {
         return stepper
     }
 
+    private func makeSwitch(isOn: Bool, action: Selector) -> UISwitch {
+        let toggle = UISwitch()
+        toggle.isOn = isOn
+        toggle.addTarget(self, action: action, for: .valueChanged)
+        return toggle
+    }
+
+    @objc private func backgroundDownloadsSwitchChanged(_ sender: UISwitch) {
+        DownloadSettings.allowsBackgroundDownloads = sender.isOn
+        PodcastsAppDelegate.configureBackgroundRefresh()
+    }
+
+    @objc private func cellularDownloadsSwitchChanged(_ sender: UISwitch) {
+        DownloadSettings.allowsCellularDownloads = sender.isOn
+    }
+
+    @objc private func lowDataModeDownloadsSwitchChanged(_ sender: UISwitch) {
+        DownloadSettings.allowsLowDataModeDownloads = sender.isOn
+    }
+
+    @objc private func preloadNextEpisodeSwitchChanged(_ sender: UISwitch) {
+        DownloadSettings.preloadsNextEpisode = sender.isOn
+    }
+
+    private func applyDownloadPoliciesNow() async {
+        statusText = "Applying download policies..."
+        tableView.reloadData()
+        var downloaded = 0
+        let subscriptions = Self.subscriptions(in: modelContext)
+        for subscription in subscriptions {
+            let episodes = LibraryStore.localEpisodes(forPodcastIDs: [subscription.stableID], in: modelContext)
+            downloaded += await LibraryStore.applyDownloadPolicy(to: episodes, subscription: subscription, in: modelContext)
+            await Task.yield()
+        }
+        statusText = downloaded == 1 ? "Downloaded 1 episode." : "Downloaded \(downloaded) episodes."
+        tableView.reloadData()
+    }
+
+    private static func subscriptions(in context: ModelContext) -> [PodcastSubscription] {
+        var descriptor = FetchDescriptor<PodcastSubscription>(sortBy: [SortDescriptor(\.sortIndex)])
+        descriptor.includePendingChanges = true
+        return (try? context.fetch(descriptor)) ?? []
+    }
+
     @objc private func backStepperChanged(_ sender: UIStepper) {
         SeekSettings.backSeconds = sender.value
         tableView.reloadRows(at: [IndexPath(row: Row.seekBack.rawValue, section: 0)], with: .none)
@@ -424,8 +531,50 @@ final class AppSettingsViewController: UITableViewController {
     }
 }
 
+final class CompletedDownloadCleanupViewController: UITableViewController {
+    init() {
+        super.init(style: .insetGrouped)
+        title = "Finished Downloads"
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        tableView.register(UITableViewCell.self, forCellReuseIdentifier: "Cell")
+    }
+
+    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+        CompletedDownloadCleanupPolicy.allCases.count
+    }
+
+    override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
+        "Delete completed episode downloads"
+    }
+
+    override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        let policy = CompletedDownloadCleanupPolicy.allCases[indexPath.row]
+        let cell = tableView.dequeueReusableCell(withIdentifier: "Cell", for: indexPath)
+        var configuration = UIListContentConfiguration.subtitleCell()
+        configuration.text = policy.title
+        configuration.secondaryText = policy.detail
+        cell.contentConfiguration = configuration
+        cell.accessoryType = DownloadSettings.completedCleanupPolicy == policy ? .checkmark : .none
+        return cell
+    }
+
+    override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        tableView.deselectRow(at: indexPath, animated: true)
+        DownloadSettings.completedCleanupPolicy = CompletedDownloadCleanupPolicy.allCases[indexPath.row]
+        tableView.reloadData()
+    }
+}
+
 final class DownloadSettingsViewController: UITableViewController {
     private let subscription: PodcastSubscription?
+    var policyDidChange: (() -> Void)?
 
     init(subscription: PodcastSubscription?) {
         self.subscription = subscription
@@ -486,6 +635,7 @@ final class DownloadSettingsViewController: UITableViewController {
             }
         }
         tableView.reloadData()
+        policyDidChange?()
     }
 }
 

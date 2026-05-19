@@ -4,6 +4,8 @@
 
 When making iOS app changes that Hannes should test, do not stop at pushing code and verifying builds. Also check whether a new TestFlight build is needed, archive/export/upload it, wait until App Store Connect marks it valid, set `usesNonExemptEncryption=false`, and add it to the Internal Testers group.
 
+Always run the project TestFlight script for that flow: `scripts/testflight-build.sh`. Do not bypass it with raw `asc publish testflight` unless Hannes explicitly asks for a one-off manual flow.
+
 If the change is backend/worker-only and no iOS build is needed, say that explicitly.
 
 ## Product priorities

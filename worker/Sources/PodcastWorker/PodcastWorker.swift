@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 nonisolated(unsafe) private var activeChildProcess: Process?
@@ -12,6 +13,8 @@ struct WorkerConfig {
     var allowStubTranscripts = ProcessInfo.processInfo.environment["PODCAST_WORKER_ALLOW_STUB"] == "true"
     var whisperCommand = ProcessInfo.processInfo.environment["PODCAST_WHISPER_COMMAND"] ?? "whisper"
     var whisperModel = ProcessInfo.processInfo.environment["PODCAST_WHISPER_MODEL"] ?? ""
+    var whisperMaxSegments = Int(ProcessInfo.processInfo.environment["PODCAST_WHISPER_MAX_SEGMENTS"] ?? "7500") ?? 7_500
+    var whisperTimeoutSeconds = TimeInterval(ProcessInfo.processInfo.environment["PODCAST_WHISPER_TIMEOUT_SECONDS"] ?? "7200") ?? 7_200
     var chapterProvider = ProcessInfo.processInfo.environment["PODCAST_CHAPTER_PROVIDER"] ?? "openrouter"
     var openRouterModel = ProcessInfo.processInfo.environment["PODCAST_OPENROUTER_MODEL"] ?? "tencent/hy3-preview"
     var openRouterContextWindow = Int(ProcessInfo.processInfo.environment["PODCAST_OPENROUTER_CONTEXT"] ?? "262144") ?? 262_144
@@ -40,6 +43,9 @@ struct WorkerConfig {
 @main
 enum PodcastWorker {
     static func main() async throws {
+        setbuf(stdout, nil)
+        setbuf(stderr, nil)
+
         var signalSources: [any DispatchSourceSignal] = []
         for sig in [SIGINT, SIGTERM] {
             signal(sig, SIG_IGN)
@@ -134,7 +140,13 @@ struct JobProcessor {
         }
         print("  running Whisper…")
 
-        if let whisper = try? await WhisperRunner(command: config.whisperCommand, model: config.whisperModel).transcribe(audioFile: audioFile, progressLabel: "transcript — \(episode.title)") {
+        do {
+            let whisper = try await WhisperRunner(
+                command: config.whisperCommand,
+                model: config.whisperModel,
+                maxSegments: config.whisperMaxSegments,
+                timeoutSeconds: config.whisperTimeoutSeconds
+            ).transcribe(audioFile: audioFile, progressLabel: "transcript — \(episode.title)")
             print("  transcription complete — language: \(whisper.language ?? "unknown"), \(whisper.segmentCount) segments")
             guard whisper.text.count >= 200 else { throw WorkerError.transcriptTooShort(whisper.text.count) }
             return TranscriptUploadDTO(
@@ -146,9 +158,11 @@ struct JobProcessor {
                 textHash: whisper.text.stableHash,
                 fingerprint: fingerprint
             )
+        } catch {
+            guard config.allowStubTranscripts else { throw error }
+            print("  transcription failed; using stub transcript because PODCAST_WORKER_ALLOW_STUB=true: \(error.localizedDescription)")
         }
 
-        guard config.allowStubTranscripts else { throw WorkerError.whisperUnavailable }
         let segment = TranscriptSegment(start: 0, end: nil, text: "Transcript requested for \(episode.title). Local transcription is not configured yet.")
         let data = try JSONEncoder().encode([segment])
         let segmentsJSON = String(decoding: data, as: UTF8.self)
@@ -306,6 +320,8 @@ struct WorkerBackendClient {
 struct WhisperRunner {
     let command: String
     let model: String
+    let maxSegments: Int
+    let timeoutSeconds: TimeInterval
 
     func transcribe(audioFile: URL, progressLabel: String) async throws -> WhisperResult {
         let outputDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("whisper-\(UUID().uuidString)", isDirectory: true)
@@ -324,20 +340,28 @@ struct WhisperRunner {
         let stderrPipe = Pipe()
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
-        let progress = WhisperProgressLogger(label: progressLabel)
+        let progress = WhisperProgressLogger(label: progressLabel, maxSegments: maxSegments)
+        let monitor = WhisperRunMonitor(process: process)
         @Sendable func streamLines(_ handle: FileHandle) {
             guard let text = String(data: handle.availableData, encoding: .utf8) else { return }
-            progress.consume(text)
+            if let abortReason = progress.consume(text) {
+                monitor.abort(reason: abortReason)
+            }
         }
         stdoutPipe.fileHandleForReading.readabilityHandler = streamLines
         stderrPipe.fileHandleForReading.readabilityHandler = streamLines
         activeChildProcess = process
         try process.run()
+        monitor.startTimeout(seconds: timeoutSeconds)
         process.waitUntilExit()
+        monitor.markFinished()
         activeChildProcess = nil
         stdoutPipe.fileHandleForReading.readabilityHandler = nil
         stderrPipe.fileHandleForReading.readabilityHandler = nil
         progress.finish()
+        if let reason = monitor.abortReason {
+            throw WorkerError.whisperAborted(reason)
+        }
         guard process.terminationStatus == 0 else { throw WorkerError.whisperFailed(process.terminationStatus) }
 
         guard let jsonFile = try FileManager.default.contentsOfDirectory(at: outputDirectory, includingPropertiesForKeys: nil).first(where: { $0.pathExtension == "json" }) else {
@@ -357,30 +381,35 @@ struct WhisperRunner {
 final class WhisperProgressLogger: @unchecked Sendable {
     private let lock = NSLock()
     private let label: String
+    private let maxSegments: Int
     private var transcriptLineCount = 0
     private var printedProgress = false
     private var buffered = ""
 
-    init(label: String) {
+    init(label: String, maxSegments: Int) {
         self.label = label
+        self.maxSegments = maxSegments
     }
 
-    func consume(_ text: String) {
+    func consume(_ text: String) -> String? {
         lock.lock()
         defer { lock.unlock() }
         buffered += text
         let lines = buffered.components(separatedBy: "\n")
         buffered = lines.last ?? ""
         for line in lines.dropLast() {
-            consumeCompleteLine(line)
+            if let abortReason = consumeCompleteLine(line) {
+                return abortReason
+            }
         }
+        return nil
     }
 
     func finish() {
         lock.lock()
         defer { lock.unlock() }
         if !buffered.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            consumeCompleteLine(buffered)
+            _ = consumeCompleteLine(buffered)
         }
         buffered = ""
         if printedProgress {
@@ -388,25 +417,29 @@ final class WhisperProgressLogger: @unchecked Sendable {
         }
     }
 
-    private func consumeCompleteLine(_ line: String) {
+    private func consumeCompleteLine(_ line: String) -> String? {
         let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        guard !trimmed.isEmpty else { return nil }
         if isTranscriptSegmentLine(trimmed) {
             transcriptLineCount += 1
             if transcriptLineCount == 1 || transcriptLineCount.isMultiple(of: 25) {
                 updateProgress("  [\(label)] Whisper: ~\(transcriptLineCount) segments transcribed")
             }
-            return
+            if transcriptLineCount > maxSegments {
+                return "Whisper exceeded \(maxSegments) transcript segments; likely hallucinating a segment loop"
+            }
+            return nil
         }
         if trimmed.localizedCaseInsensitiveContains("progress") || trimmed.contains("%") {
             updateProgress("  [\(label)] \(trimmed)")
-            return
+            return nil
         }
         if printedProgress {
             FileHandle.standardOutput.write(Data("\n".utf8))
             printedProgress = false
         }
         print("  \(trimmed)")
+        return nil
     }
 
     private func isTranscriptSegmentLine(_ line: String) -> Bool {
@@ -416,6 +449,50 @@ final class WhisperProgressLogger: @unchecked Sendable {
     private func updateProgress(_ message: String) {
         printedProgress = true
         FileHandle.standardOutput.write(Data("\r\(message)".utf8))
+    }
+}
+
+final class WhisperRunMonitor: @unchecked Sendable {
+    private let lock = NSLock()
+    private weak var process: Process?
+    private var finished = false
+    private var reason: String?
+
+    var abortReason: String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return reason
+    }
+
+    init(process: Process) {
+        self.process = process
+    }
+
+    func startTimeout(seconds: TimeInterval) {
+        guard seconds > 0 else { return }
+        DispatchQueue.global().asyncAfter(deadline: .now() + seconds) { [weak self] in
+            self?.abort(reason: "Whisper exceeded timeout of \(Int(seconds)) seconds")
+        }
+    }
+
+    func abort(reason newReason: String) {
+        lock.lock()
+        guard !finished else {
+            lock.unlock()
+            return
+        }
+        if reason == nil {
+            reason = newReason
+        }
+        let runningProcess = process
+        lock.unlock()
+        runningProcess?.terminate()
+    }
+
+    func markFinished() {
+        lock.lock()
+        finished = true
+        lock.unlock()
     }
 }
 
@@ -723,6 +800,7 @@ enum WorkerError: LocalizedError {
     case unsupportedJobKind(String)
     case downloadFailed(Int)
     case whisperUnavailable
+    case whisperAborted(String)
     case whisperFailed(Int32)
     case whisperOutputMissing
     case transcriptTooShort(Int)
@@ -741,6 +819,7 @@ enum WorkerError: LocalizedError {
         case let .unsupportedJobKind(kind): "Unsupported job kind: \(kind)"
         case let .downloadFailed(status): "Audio download failed with HTTP \(status)"
         case .whisperUnavailable: "Whisper command is unavailable; set PODCAST_WHISPER_COMMAND or PODCAST_WORKER_ALLOW_STUB=true for development"
+        case let .whisperAborted(reason): "Whisper aborted: \(reason)"
         case let .whisperFailed(status): "Whisper failed with exit code \(status)"
         case .whisperOutputMissing: "Whisper did not produce a JSON output file"
         case let .transcriptTooShort(count): "Transcript too short (\(count) chars) — likely a transcription failure"

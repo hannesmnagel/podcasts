@@ -271,6 +271,44 @@ final class BackendTests: XCTestCase {
         })
     }
 
+    func testQueueMonitorPageReflectsCurrentQueueState() async throws {
+        let app = try await Application.make(.testing)
+        defer { Task { try await app.asyncShutdown() } }
+        try await configure(app)
+        try await app.autoMigrate()
+
+        let podcast = Podcast(stableID: "podcast-stable", feedURL: "https://example.com/feed.xml", title: "Example Podcast")
+        try await podcast.save(on: app.db)
+        let episode = Episode(podcastID: try podcast.requireID(), stableID: "episode-stable", guid: "1", title: "Queue Episode", audioURL: "https://example.com/audio.mp3")
+        try await episode.save(on: app.db)
+
+        let pendingJob = WorkerJob(episodeID: try episode.requireID(), kind: "transcript", priority: 7)
+        try await pendingJob.save(on: app.db)
+
+        let claimedJob = WorkerJob(episodeID: try episode.requireID(), kind: "chapters", priority: 3)
+        claimedJob.status = "claimed"
+        claimedJob.claimedBy = "test-worker"
+        claimedJob.claimedAt = Date(timeIntervalSinceNow: -7_300)
+        try await claimedJob.save(on: app.db)
+
+        let controller = QueueMonitorController()
+        let snapshot = try await controller.snapshot(on: app.db)
+        XCTAssertEqual(snapshot.totalJobs, 2)
+        XCTAssertEqual(snapshot.pendingJobs.count, 1)
+        XCTAssertEqual(snapshot.claimedJobs.count, 1)
+        XCTAssertEqual(snapshot.staleClaimedJobs.count, 1)
+
+        let html = QueueMonitorController.renderHTML(snapshot: snapshot)
+        XCTAssertTrue(html.contains("Queue Monitor"))
+        XCTAssertTrue(html.contains("Pending Queue"))
+        XCTAssertTrue(html.contains("Claimed Queue"))
+
+        try await app.test(.GET, "queue", afterResponse: { res async throws in
+            XCTAssertEqual(res.status, .ok)
+            XCTAssertEqual(res.headers.contentType?.description, "text/html; charset=utf-8")
+        })
+    }
+
     func testPodcastIDIsStableForURLNormalization() {
         XCTAssertEqual(
             StableID.podcastID(feedURL: "HTTPS://EXAMPLE.COM/feed.xml#fragment"),

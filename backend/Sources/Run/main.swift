@@ -9,6 +9,9 @@ enum Entrypoint {
         let app = try await Application.make(env)
         do {
             try await configure(app)
+            if app.environment == .testing || Environment.get("AUTO_MIGRATE") == "true" {
+                try await app.autoMigrate()
+            }
             try await app.execute()
         } catch {
             app.logger.report(error: error)

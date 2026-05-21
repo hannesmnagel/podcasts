@@ -5,6 +5,7 @@ func routes(_ app: Application) throws {
     try app.register(collection: PodcastController())
     try app.register(collection: EpisodeController())
     try app.register(collection: ArtifactController())
+    try app.register(collection: QueueMonitorController())
     try app.register(collection: WorkerController())
 }
 

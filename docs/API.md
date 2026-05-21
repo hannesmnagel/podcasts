@@ -28,3 +28,13 @@ Content-Type: application/json
 ```
 
 Returns the highest-priority pending job. The priority order is demand-driven and anonymous.
+
+## Queue monitor
+
+```http
+GET /queue
+```
+
+Browser-friendly HTML dashboard for the worker queue. It shows pending, claimed, completed, and failed job counts, plus the stale-claim watchdog threshold used by the backend's reaper.
+
+The same page is also available at `GET /worker/queue`.

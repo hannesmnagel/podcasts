@@ -4,6 +4,7 @@ import SwiftData
 @MainActor
 enum LibraryStore {
     private static let lastPlaybackEpisodeIDKey = "playbackState.lastEpisodeStableID"
+    private static let embeddedChapterSource = "id3 embedded v2"
 
     static func subscribe(to podcast: PodcastDTO, in context: ModelContext) {
         let stableID = podcast.stableID
@@ -501,7 +502,8 @@ enum LibraryStore {
            source.contains("id3") || source.contains("chap"),
            let chaptersJSON = artifact.chaptersJSON {
             let cached = await ArtifactDataProcessor.renderChapters(chaptersJSON: chaptersJSON)
-            if cached.count > 1 { return cached }
+            let sourceIsCurrentEmbeddedParser = source.contains(embeddedChapterSource)
+            if cached.count > 1, sourceIsCurrentEmbeddedParser { return cached }
         }
 
         let episode = localEpisode(for: episode, in: context)
@@ -510,7 +512,7 @@ enum LibraryStore {
         if chapters.count > 1,
            let data = try? JSONEncoder().encode(chapters),
            let chaptersJSON = String(data: data, encoding: .utf8) {
-            cacheChapters(ChapterArtifactDTO(id: nil, source: "id3 embedded", chaptersJSON: chaptersJSON), for: episode, in: context)
+            cacheChapters(ChapterArtifactDTO(id: nil, source: embeddedChapterSource, chaptersJSON: chaptersJSON), for: episode, in: context)
         }
         return chapters
     }

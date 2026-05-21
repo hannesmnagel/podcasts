@@ -230,8 +230,24 @@ enum ID3ChapterParser {
         guard idData.allSatisfy({ byte in byte == 0 || (byte >= 0x30 && byte <= 0x5A) }) else { return nil }
         guard idData.contains(where: { $0 != 0 }) else { return nil }
         let id = String(decoding: idData, as: UTF8.self)
-        let size = version == 4 ? synchsafeInteger(data, at: offset + 4) : bigEndianInteger(data, at: offset + 4)
+        let size = frameSize(data, at: offset + 4, version: version)
         return (id, size)
+    }
+
+    private static func frameSize(_ data: Data, at offset: Int, version: UInt8) -> Int {
+        guard offset + 4 <= data.count else { return 0 }
+        if version == 4 {
+            let hasNonSynchsafeByte = (0..<4).contains { index in
+                (data[offset + index] & 0x80) != 0
+            }
+            // Some publishers write ID3v2.4 chapter subframe sizes as raw big-endian.
+            // Fallback keeps parsing resilient so chapter artwork isn't dropped.
+            if hasNonSynchsafeByte {
+                return bigEndianInteger(data, at: offset)
+            }
+            return synchsafeInteger(data, at: offset)
+        }
+        return bigEndianInteger(data, at: offset)
     }
 
     private static func synchsafeInteger(_ data: Data, at offset: Int) -> Int {

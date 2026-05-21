@@ -324,6 +324,8 @@ final class PlayerController: ObservableObject {
         center.togglePlayPauseCommand.isEnabled = true
         center.skipForwardCommand.isEnabled = true
         center.skipBackwardCommand.isEnabled = true
+        center.nextTrackCommand.isEnabled = true
+        center.previousTrackCommand.isEnabled = true
 
         guard !didInstallRemoteCommandHandlers else { return }
         didInstallRemoteCommandHandlers = true
@@ -356,6 +358,14 @@ final class PlayerController: ObservableObject {
         }
         center.skipBackwardCommand.preferredIntervals = [NSNumber(value: SeekSettings.backSeconds)]
         center.skipBackwardCommand.addTarget { [weak self] _ in
+            Task { @MainActor in self?.seek(by: -SeekSettings.backSeconds) }
+            return .success
+        }
+        center.nextTrackCommand.addTarget { [weak self] _ in
+            Task { @MainActor in self?.seek(by: SeekSettings.forwardSeconds) }
+            return .success
+        }
+        center.previousTrackCommand.addTarget { [weak self] _ in
             Task { @MainActor in self?.seek(by: -SeekSettings.backSeconds) }
             return .success
         }

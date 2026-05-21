@@ -34,7 +34,7 @@ final class WorkerMonitorModel {
     }
 
     func refresh() {
-        isRunning = shell(["/usr/bin/tmux", "has-session", "-t", sessionName]).exitCode == 0
+        isRunning = shell(["/opt/homebrew/bin/tmux", "has-session", "-t", sessionName]).exitCode == 0
         workerPID = readWorkerPID()
         whisperPID = readWhisperPID()
         logTail = readLogTail()
@@ -44,15 +44,15 @@ final class WorkerMonitorModel {
 
     func startWorker() {
         let workerDirectory = "\(repositoryPath)/worker"
-        let logPath = "\(workerDirectory)/logs/worker-$(date +%Y%m%d-%H%M%S).log"
+        let logPath = "\(workerDirectory)/logs/worker-\(Date().ISO8601Format()).log"
         let command = "cd \(workerDirectory.shellQuoted) && ./run.sh 2>&1 | tee -a \(logPath.shellQuoted)"
-        let result = shell(["/usr/bin/tmux", "new-session", "-d", "-s", sessionName, command])
+        let result = shell(["/opt/homebrew/bin/tmux", "new-session", "-d", "-s", sessionName, command])
         handle(result)
         refresh()
     }
 
     func stopWorker() {
-        let result = shell(["/usr/bin/tmux", "send-keys", "-t", sessionName, "C-c"])
+        let result = shell(["/opt/homebrew/bin/tmux", "send-keys", "-t", sessionName, "C-c"])
         handle(result)
         refresh()
     }

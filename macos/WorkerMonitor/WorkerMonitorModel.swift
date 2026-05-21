@@ -44,8 +44,25 @@ final class WorkerMonitorModel {
 
     func startWorker() {
         let workerDirectory = "\(repositoryPath)/worker"
-        let logPath = "\(workerDirectory)/logs/worker-\(Date().ISO8601Format()).log"
-        let command = "cd \(workerDirectory.shellQuoted) && ./run.sh 2>&1 | tee -a \(logPath.shellQuoted)"
+        let logPath = "\(workerDirectory)/logs/worker-current.log"
+        let maxLines = 240
+        let rotateSeconds = 5
+        let command = """
+        cd \(workerDirectory.shellQuoted) && \
+        touch \(logPath.shellQuoted) && \
+        tail -n \(maxLines) \(logPath.shellQuoted) > \(logPath.shellQuoted).tmp 2>/dev/null || true && \
+        mv \(logPath.shellQuoted).tmp \(logPath.shellQuoted) 2>/dev/null || true && \
+        (
+          while true; do
+            sleep \(rotateSeconds)
+            tail -n \(maxLines) \(logPath.shellQuoted) > \(logPath.shellQuoted).tmp 2>/dev/null || true
+            mv \(logPath.shellQuoted).tmp \(logPath.shellQuoted) 2>/dev/null || true
+          done
+        ) & \
+        log_roller_pid=$! && \
+        trap 'kill $log_roller_pid 2>/dev/null || true' EXIT INT TERM && \
+        ./run.sh 2>&1 | tee -a \(logPath.shellQuoted)
+        """
         let result = shell(["/opt/homebrew/bin/tmux", "new-session", "-d", "-s", sessionName, command])
         handle(result)
         refresh()

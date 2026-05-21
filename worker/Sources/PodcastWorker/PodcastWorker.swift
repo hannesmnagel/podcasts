@@ -2,7 +2,7 @@ import Darwin
 import Foundation
 
 nonisolated(unsafe) private var activeChildProcess: Process?
-nonisolated(unsafe) private var activeJobID: UUID?
+nonisolated(unsafe) private var activeJobIDs: Set<UUID> = []
 nonisolated(unsafe) private var activeJobBackendURL: URL?
 
 struct WorkerConfig {
@@ -40,6 +40,35 @@ struct WorkerConfig {
     }
 }
 
+actor WorkerRunState {
+    private var transcriptRunning = false
+    private var chapterRunning = false
+
+    func canStartTranscript() -> Bool {
+        !transcriptRunning
+    }
+
+    func canStartChapter() -> Bool {
+        !chapterRunning
+    }
+
+    func markTranscriptRunning(_ running: Bool) {
+        transcriptRunning = running
+    }
+
+    func markChapterRunning(_ running: Bool) {
+        chapterRunning = running
+    }
+
+    func preferredClaimKinds() -> [String] {
+        transcriptRunning ? ["chapters"] : ["transcript", "chapters"]
+    }
+
+    func isIdle() -> Bool {
+        !transcriptRunning && !chapterRunning
+    }
+}
+
 @main
 enum PodcastWorker {
     static func main() async throws {
@@ -52,16 +81,18 @@ enum PodcastWorker {
             let src = DispatchSource.makeSignalSource(signal: sig, queue: .global())
             src.setEventHandler {
                 activeChildProcess?.terminate()
-                if let id = activeJobID, let base = activeJobBackendURL,
-                   let url = URL(string: "worker/jobs/\(id.uuidString)/fail", relativeTo: base)?.absoluteURL {
-                    var req = URLRequest(url: url)
-                    req.httpMethod = "POST"
-                    req.addValue("application/json", forHTTPHeaderField: "Content-Type")
-                    req.httpBody = try? JSONEncoder().encode(FailJobRequest(retry: true))
-                    let sem = DispatchSemaphore(value: 0)
-                    URLSession.shared.dataTask(with: req) { _, _, _ in sem.signal() }.resume()
-                    _ = sem.wait(timeout: .now() + 5)
-                    print("\nfailed active job \(id) before exit")
+                if let base = activeJobBackendURL {
+                    for id in activeJobIDs {
+                        guard let url = URL(string: "worker/jobs/\(id.uuidString)/fail", relativeTo: base)?.absoluteURL else { continue }
+                        var req = URLRequest(url: url)
+                        req.httpMethod = "POST"
+                        req.addValue("application/json", forHTTPHeaderField: "Content-Type")
+                        req.httpBody = try? JSONEncoder().encode(FailJobRequest(retry: true))
+                        let sem = DispatchSemaphore(value: 0)
+                        URLSession.shared.dataTask(with: req) { _, _, _ in sem.signal() }.resume()
+                        _ = sem.wait(timeout: .now() + 5)
+                        print("\nfailed active job \(id) before exit")
+                    }
                 }
                 exit(0)
             }
@@ -75,13 +106,48 @@ enum PodcastWorker {
         let processor = JobProcessor(config: config, client: client)
         print("PodcastWorker starting: \(config.workerID) -> \(config.backendURL.absoluteString)")
 
+        let runState = WorkerRunState()
         repeat {
             do {
-                if let job = try await client.claimJob(workerID: config.workerID) {
+                let kinds = await runState.preferredClaimKinds()
+                if let job = try await client.claimJob(workerID: config.workerID, kinds: kinds) {
                     print("claimed job \(job.id) [\(job.kind)] for \(job.episode.title)")
-                    try await processor.process(job)
+                    switch job.kind {
+                    case "transcript":
+                        guard await runState.canStartTranscript() else {
+                            try await client.failJob(job.id, retry: true)
+                            continue
+                        }
+                        await runState.markTranscriptRunning(true)
+                        Task {
+                            defer { Task { await runState.markTranscriptRunning(false) } }
+                            do {
+                                try await processor.processTranscript(job)
+                            } catch {
+                                print("transcript job failed: \(error.localizedDescription)")
+                            }
+                        }
+                    case "chapters":
+                        guard await runState.canStartChapter() else {
+                            try await client.failJob(job.id, retry: true)
+                            continue
+                        }
+                        await runState.markChapterRunning(true)
+                        Task {
+                            defer { Task { await runState.markChapterRunning(false) } }
+                            do {
+                                try await processor.processChapters(job)
+                            } catch {
+                                print("chapter job failed: \(error.localizedDescription)")
+                            }
+                        }
+                    default:
+                        try await client.failJob(job.id, retry: false)
+                    }
                 } else {
-                    print("no pending job; sleeping \(config.idleSleepSeconds)s")
+                    if await runState.isIdle() {
+                        print("no pending job; sleeping \(config.idleSleepSeconds)s")
+                    }
                     try await Task.sleep(for: .seconds(config.idleSleepSeconds))
                 }
             } catch {
@@ -96,30 +162,58 @@ struct JobProcessor {
     let config: WorkerConfig
     let client: WorkerBackendClient
 
-    func process(_ job: WorkerJobDTO) async throws {
-        activeJobID = job.id
+    func processTranscript(_ job: WorkerJobDTO) async throws {
+        activeJobIDs.insert(job.id)
         activeJobBackendURL = client.baseURL
         defer {
-            activeJobID = nil
-            activeJobBackendURL = nil
+            activeJobIDs.remove(job.id)
+            if activeJobIDs.isEmpty {
+                activeJobBackendURL = nil
+            }
         }
         do {
-            switch job.kind {
-            case "transcript":
-                let transcript = try await makeTranscript(for: job.episode)
-                try await client.uploadTranscript(transcript, episodeID: job.episode.stableID)
-            case "chapters":
-                if let chapters = try await makeChapters(for: job.episode) {
-                    try await client.uploadChapters(chapters, episodeID: job.episode.stableID)
-                }
-            default:
-                throw WorkerError.unsupportedJobKind(job.kind)
-            }
+            let transcript = try await makeTranscript(for: job.episode)
+            try await client.uploadTranscript(transcript, episodeID: job.episode.stableID)
             _ = try await client.completeJob(job.id)
             print("completed job \(job.id)")
         } catch {
             try? await client.failJob(job.id, retry: false)
             throw error
+        }
+    }
+
+    func processChapters(_ job: WorkerJobDTO) async throws {
+        activeJobIDs.insert(job.id)
+        activeJobBackendURL = client.baseURL
+        defer {
+            activeJobIDs.remove(job.id)
+            if activeJobIDs.isEmpty {
+                activeJobBackendURL = nil
+            }
+        }
+        do {
+            if let chapters = try await makeChapters(for: job.episode) {
+                try await client.uploadChapters(chapters, episodeID: job.episode.stableID)
+            }
+            _ = try await client.completeJob(job.id)
+            print("completed job \(job.id)")
+        } catch {
+            let retry = if case WorkerError.transcriptSegmentsMissing = error { true } else { false }
+            try? await client.failJob(job.id, retry: retry)
+            throw error
+        }
+    }
+
+    func process(_ job: WorkerJobDTO) async throws {
+        // Kept for backwards compatibility in tests/callers.
+        switch job.kind {
+        case "transcript":
+            try await processTranscript(job)
+        case "chapters":
+            try await processChapters(job)
+        default:
+            activeJobBackendURL = nil
+            throw WorkerError.unsupportedJobKind(job.kind)
         }
     }
 
@@ -216,13 +310,7 @@ struct JobProcessor {
             return segments
         }
 
-        print("  no stored transcript found; running Whisper for chapterization…")
-        let upload = try await makeTranscript(for: episode)
-        try await client.uploadTranscript(upload, episodeID: episode.stableID)
-        guard let segments = try decodeTranscriptSegments(upload.segmentsJSON), !segments.isEmpty else {
-            throw WorkerError.transcriptSegmentsMissing
-        }
-        return segments
+        throw WorkerError.transcriptSegmentsMissing
     }
 
     private func decodeTranscriptSegments(_ segmentsJSON: String) throws -> [TranscriptSegment]? {
@@ -255,9 +343,9 @@ struct WorkerBackendClient {
         encoder.dateEncodingStrategy = .iso8601
     }
 
-    func claimJob(workerID: String) async throws -> WorkerJobDTO? {
+    func claimJob(workerID: String, kinds: [String]? = nil) async throws -> WorkerJobDTO? {
         do {
-            return try await post("worker/jobs/claim", body: ClaimJobRequest(workerID: workerID))
+            return try await post("worker/jobs/claim", body: ClaimJobRequest(workerID: workerID, kinds: kinds))
         } catch WorkerError.noContent {
             return nil
         }
@@ -708,7 +796,10 @@ private extension Array where Element == ChapterDTO {
     }
 }
 
-struct ClaimJobRequest: Codable { let workerID: String }
+struct ClaimJobRequest: Codable {
+    let workerID: String
+    let kinds: [String]?
+}
 struct FailJobRequest: Codable { let retry: Bool }
 struct EmptyBody: Codable {}
 

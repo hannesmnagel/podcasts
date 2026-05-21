@@ -2,6 +2,9 @@ import Fluent
 import Vapor
 
 struct WorkerController: RouteCollection {
+    private let transcriptPriorityBoost = 1_000_000
+    private let recencyPriorityWindowDays = 30
+
     func boot(routes: any RoutesBuilder) throws {
         let workers = routes.grouped("worker")
         workers.post("jobs", "claim", use: claim)
@@ -12,7 +15,7 @@ struct WorkerController: RouteCollection {
     func claim(req: Request) async throws -> ClaimedWorkerJobResponse {
         let input = try req.content.decode(ClaimJobRequest.self)
         for _ in 0..<3 {
-            var pending = try await nextPendingJob(on: req.db)
+            var pending = try await nextPendingJob(kinds: input.kinds, on: req.db)
             if pending == nil {
                 pending = try await seedBacklogTranscriptJob(on: req.db)
             }
@@ -59,38 +62,59 @@ struct WorkerController: RouteCollection {
         return try ClaimedWorkerJobResponse(job: job)
     }
 
-    private func nextPendingJob(on db: any Database) async throws -> WorkerJob? {
-        try await WorkerJob.query(on: db)
+    private func nextPendingJob(kinds: [String]?, on db: any Database) async throws -> WorkerJob? {
+        var query = WorkerJob.query(on: db)
             .filter(\.$status == "pending")
-            .sort(\.$priority, .descending)
-            .sort(\.$createdAt, .ascending)
-            .first()
+            .with(\.$episode)
+        if let kinds, !kinds.isEmpty {
+            query = query.group(.or) { group in
+                for kind in kinds {
+                    group.filter(\.$kind == kind)
+                }
+            }
+        }
+        let pending = try await query.all()
+        return pending.max { lhs, rhs in
+            jobSortKey(lhs) < jobSortKey(rhs)
+        }
+    }
+
+    private func jobSortKey(_ job: WorkerJob) -> (Int, Date, Date, UUID) {
+        let episodePublishedAt = job.episode.publishedAt ?? .distantPast
+        let kindBoost = job.kind == "transcript" ? transcriptPriorityBoost : 0
+        let recencyBoost = recencyPriority(for: episodePublishedAt)
+        let createdAt = job.createdAt ?? .distantPast
+        let id = job.id ?? UUID()
+        return (job.priority + kindBoost + recencyBoost, episodePublishedAt, createdAt, id)
+    }
+
+    private func recencyPriority(for publishedAt: Date) -> Int {
+        let daysOld = Calendar.current.dateComponents([.day], from: publishedAt, to: Date()).day ?? recencyPriorityWindowDays
+        let clampedDays = max(0, min(recencyPriorityWindowDays, daysOld))
+        let remaining = recencyPriorityWindowDays - clampedDays
+        return remaining * 1_000
     }
 
     private func seedBacklogTranscriptJob(on db: any Database) async throws -> WorkerJob? {
-        let demands = try await PodcastDemand.query(on: db)
-            .sort(\.$transcriptRequests, .descending)
-            .sort(\.$fingerprintRequests, .descending)
+        let episodeIDsWithDemand = try await podcastIDsSortedByDemand(on: db)
+        let demandedEpisodes = try await Episode.query(on: db)
+            .filter(\.$podcast.$id ~~ episodeIDsWithDemand)
+            .sort(\.$publishedAt, .descending)
+            .sort(\.$createdAt, .descending)
             .all()
-        for demand in demands {
-            if let job = try await seedBacklogTranscriptJob(podcastID: demand.$podcast.id, priority: max(1, demand.priorityScore), on: db) {
-                return job
+        for episode in demandedEpisodes {
+            let episodeID = try episode.requireID()
+            guard try await needsAlignmentTranscriptRefresh(episodeID: episodeID, on: db),
+                  try await hasBlockingTranscriptJob(episodeID: episodeID, on: db) == false else {
+                continue
             }
+            let boost = recencyPriority(for: episode.publishedAt ?? .distantPast)
+            let job = WorkerJob(episodeID: episodeID, kind: "transcript", priority: transcriptPriorityBoost + boost)
+            try await job.save(on: db)
+            return job
         }
 
-        let podcasts = try await Podcast.query(on: db).all()
-        for podcast in podcasts {
-            if let podcastID = podcast.id,
-               let job = try await seedBacklogTranscriptJob(podcastID: podcastID, priority: 0, on: db) {
-                return job
-            }
-        }
-        return nil
-    }
-
-    private func seedBacklogTranscriptJob(podcastID: UUID, priority: Int, on db: any Database) async throws -> WorkerJob? {
         let episodes = try await Episode.query(on: db)
-            .filter(\.$podcast.$id == podcastID)
             .sort(\.$publishedAt, .descending)
             .sort(\.$createdAt, .descending)
             .all()
@@ -100,11 +124,20 @@ struct WorkerController: RouteCollection {
                   try await hasBlockingTranscriptJob(episodeID: episodeID, on: db) == false else {
                 continue
             }
-            let job = WorkerJob(episodeID: episodeID, kind: "transcript", priority: priority)
+            let boost = recencyPriority(for: episode.publishedAt ?? .distantPast)
+            let job = WorkerJob(episodeID: episodeID, kind: "transcript", priority: transcriptPriorityBoost + boost)
             try await job.save(on: db)
             return job
         }
         return nil
+    }
+
+    private func podcastIDsSortedByDemand(on db: any Database) async throws -> [UUID] {
+        let demands = try await PodcastDemand.query(on: db)
+            .sort(\.$transcriptRequests, .descending)
+            .sort(\.$fingerprintRequests, .descending)
+            .all()
+        return demands.map(\.$podcast.id)
     }
 
     private func needsAlignmentTranscriptRefresh(episodeID: UUID, on db: any Database) async throws -> Bool {
@@ -136,6 +169,7 @@ struct WorkerController: RouteCollection {
 
 struct ClaimJobRequest: Content {
     let workerID: String
+    let kinds: [String]?
 }
 
 struct FailJobRequest: Content {

@@ -35,6 +35,7 @@ final class PlayerController: ObservableObject {
     private var itemCancellables: Set<AnyCancellable> = []
     private var artworkTask: Task<Void, Never>?
     private var nowPlayingArtworkURL: URL?
+    private var defaultArtworkURL: URL?
     private var autoSkipChapters: [EpisodeChapterDTO] = []
     private var lastAutoSkippedChapterID: String?
     private var isAutoSkipping = false
@@ -87,8 +88,9 @@ final class PlayerController: ObservableObject {
             isPlaying = false
         }
         let displayArtworkURL = artworkURL ?? episode.imageURL.flatMap(URL.init)
+        defaultArtworkURL = displayArtworkURL
         ArtworkImageView.preload(url: displayArtworkURL)
-        updateNowPlaying(for: episode, artworkURL: displayArtworkURL)
+        updateNowPlaying(for: episode, artworkURL: currentChapterArtworkURL() ?? displayArtworkURL)
     }
 
     func togglePlayPause() {
@@ -134,6 +136,7 @@ final class PlayerController: ObservableObject {
     func updateAutoSkipChapters(_ chapters: [EpisodeChapterDTO]) {
         autoSkipChapters = chapters.sorted { $0.start < $1.start }
         lastAutoSkippedChapterID = nil
+        updateCurrentArtworkForPlaybackPosition()
     }
 
     func refreshSystemPlaybackIntegration() {
@@ -171,9 +174,23 @@ final class PlayerController: ObservableObject {
             undoSeekAction = SeekUndoAction(from: source, to: targetSeconds)
         }
         elapsed = targetSeconds
+        updateCurrentArtworkForPlaybackPosition()
         player.seek(to: CMTime(seconds: targetSeconds, preferredTimescale: 600)) { [weak self] _ in
-            Task { @MainActor in self?.updateNowPlayingPlaybackState() }
+            Task { @MainActor in
+                self?.updateCurrentArtworkForPlaybackPosition()
+                self?.updateNowPlayingPlaybackState()
+            }
         }
+    }
+
+    private func updateCurrentArtworkForPlaybackPosition() {
+        updateNowPlayingArtwork(url: currentChapterArtworkURL() ?? defaultArtworkURL)
+    }
+
+    private func currentChapterArtworkURL() -> URL? {
+        autoSkipChapters
+            .last { $0.start <= elapsed }
+            .flatMap(\.displayImageURL)
     }
 
     private func applyRate() {
@@ -202,6 +219,7 @@ final class PlayerController: ObservableObject {
                     self.duration = itemDuration
                 }
                 self.autoSkipCurrentChapterIfNeeded()
+                self.updateCurrentArtworkForPlaybackPosition()
             }
         }
     }

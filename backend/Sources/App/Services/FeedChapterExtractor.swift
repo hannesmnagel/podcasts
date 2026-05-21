@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationXML)
+import FoundationXML
+#endif
 
 struct FeedChapterExtractor: Sendable {
     func rssChapters(from data: Data, relativeTo feedURL: String) -> [String: FeedChapterSet] {

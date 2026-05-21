@@ -469,7 +469,7 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
         titleLabel.text = episode.title
         podcastLabel.text = podcastTitle(for: episode).uppercased()
         dateLabel.text = episode.publishedAt?.formatted(date: .abbreviated, time: .omitted)
-        artworkView.load(url: primaryArtworkURL(for: episode), minimumPixelDimension: 1200)
+        artworkView.load(url: currentArtworkURL(for: episode), minimumPixelDimension: 1200)
         currentChapterLabel.text = currentChapterTitle()
         updateSwipePanelsIfNeeded(for: episode)
         updateTranscriptPlaybackPosition()
@@ -644,6 +644,7 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
                     at: chapter.start,
                     artworkURL: LibraryStore.cachedChapterImageURL(for: chapter, episode: playableEpisode, in: self.modelContext) ?? chapter.displayImageURL ?? self.currentArtworkURL(for: playableEpisode)
                 )
+                self.player.updateAutoSkipChapters(self.chapters)
             }
         }, for: .touchUpInside)
         let skipState: UIMenuElement.State = ChapterSkipRuleStore.shouldSkip(chapterTitle: chapter.title) ? .on : .off
@@ -808,7 +809,7 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
             guard !Task.isCancelled, self.isCurrentEpisode(episode) else { return }
             self.chapters = loadedChapters
             self.player.updateAutoSkipChapters(loadedChapters)
-            self.player.updateNowPlayingArtwork(url: self.primaryArtworkURL(for: episode))
+            self.player.updateNowPlayingArtwork(url: self.currentArtworkURL(for: episode))
             self.update()
         }
     }
@@ -839,7 +840,7 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
             chapters = loadedChapters
         }
         player.updateAutoSkipChapters(chapters)
-        player.updateNowPlayingArtwork(url: primaryArtworkURL(for: episode))
+        player.updateNowPlayingArtwork(url: currentArtworkURL(for: episode))
         update()
     }
 

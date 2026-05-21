@@ -243,12 +243,12 @@ final class EpisodeDetailViewController: UIViewController {
                     self.showDownloadFailed()
                     return
                 }
-                self.player.updateAutoSkipChapters(self.chapters)
                 self.player.play(
                     playableEpisode,
                     at: chapter.start,
                     artworkURL: LibraryStore.cachedChapterImageURL(for: chapter, episode: playableEpisode, in: self.modelContext) ?? chapter.displayImageURL ?? self.artworkURL
                 )
+                self.player.updateAutoSkipChapters(self.chapters)
             }
         }, for: .touchUpInside)
         let skipState: UIMenuElement.State = ChapterSkipRuleStore.shouldSkip(chapterTitle: chapter.title) ? .on : .off
@@ -395,8 +395,8 @@ final class EpisodeDetailViewController: UIViewController {
                     self.showDownloadFailed()
                     return
                 }
-                self.player.updateAutoSkipChapters(self.chapters)
                 self.player.play(playableEpisode, at: LibraryStore.playbackPosition(for: playableEpisode, in: self.modelContext), artworkURL: self.artworkURL)
+                self.player.updateAutoSkipChapters(self.chapters)
                 self.updateActionHeader()
             }
         }

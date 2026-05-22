@@ -4,6 +4,9 @@ import Vapor
 struct WorkerController: RouteCollection {
     private let transcriptPriorityBoost = 1_000_000
     private let recencyPriorityWindowDays = 30
+    private let baseRetryDelaySeconds = 60
+    private let maxRetryDelaySeconds = 3600
+    private let maxRetryAttempts = 8
 
     func boot(routes: any RoutesBuilder) throws {
         let workers = routes.grouped("worker")
@@ -44,6 +47,7 @@ struct WorkerController: RouteCollection {
         let job = try await findJob(req)
         job.status = "completed"
         job.completedAt = Date()
+        job.nextAttemptAt = nil
         try await job.save(on: req.db)
         return try ClaimedWorkerJobResponse(job: job)
     }
@@ -51,20 +55,34 @@ struct WorkerController: RouteCollection {
     func fail(req: Request) async throws -> ClaimedWorkerJobResponse {
         let job = try await findJob(req)
         let input = try req.content.decode(FailJobRequest.self)
-        if input.retry ?? false {
+        if input.retry == false {
+            job.status = "failed"
+            job.nextAttemptAt = nil
+        } else if job.retryCount >= maxRetryAttempts {
+            job.status = "failed"
+            job.nextAttemptAt = nil
+        } else {
+            job.retryCount += 1
             job.status = "pending"
             job.claimedBy = nil
             job.claimedAt = nil
-        } else {
-            job.status = "failed"
+            let exponent = max(0, job.retryCount - 1)
+            let multiplier = 1 << min(exponent, 30)
+            let delay = min(maxRetryDelaySeconds, baseRetryDelaySeconds * multiplier)
+            job.nextAttemptAt = Date().addingTimeInterval(TimeInterval(delay))
         }
         try await job.save(on: req.db)
         return try ClaimedWorkerJobResponse(job: job)
     }
 
     private func nextPendingJob(kinds: [String]?, on db: any Database) async throws -> WorkerJob? {
+        let now = Date()
         var query = WorkerJob.query(on: db)
             .filter(\.$status == "pending")
+            .group(.or) { group in
+                group.filter(\.$nextAttemptAt == nil)
+                group.filter(\.$nextAttemptAt <= now)
+            }
             .with(\.$episode)
         if let kinds, !kinds.isEmpty {
             query = query.group(.or) { group in

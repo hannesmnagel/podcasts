@@ -28,6 +28,7 @@ public func configure(_ app: Application) async throws {
     app.migrations.add(CreateFingerprintArtifact())
     app.migrations.add(CreateChapterArtifact())
     app.migrations.add(CreateWorkerJob())
+    app.migrations.add(AddWorkerJobRetryBackoff())
 
     app.routes.defaultMaxBodySize = "50mb"
     app.lifecycle.use(StaleJobReaper())

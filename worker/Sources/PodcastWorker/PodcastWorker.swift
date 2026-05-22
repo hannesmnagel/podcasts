@@ -177,7 +177,7 @@ struct JobProcessor {
             _ = try await client.completeJob(job.id)
             print("completed job \(job.id)")
         } catch {
-            try? await client.failJob(job.id, retry: false)
+            try? await client.failJob(job.id, retry: true)
             throw error
         }
     }
@@ -198,8 +198,7 @@ struct JobProcessor {
             _ = try await client.completeJob(job.id)
             print("completed job \(job.id)")
         } catch {
-            let retry = if case WorkerError.transcriptSegmentsMissing = error { true } else { false }
-            try? await client.failJob(job.id, retry: retry)
+            try? await client.failJob(job.id, retry: true)
             throw error
         }
     }

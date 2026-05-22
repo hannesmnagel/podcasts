@@ -9,6 +9,8 @@ final class WorkerJob: Model, Content, @unchecked Sendable {
     @Field(key: "kind") var kind: String
     @Field(key: "status") var status: String
     @Field(key: "priority") var priority: Int
+    @Field(key: "retry_count") var retryCount: Int
+    @Field(key: "next_attempt_at") var nextAttemptAt: Date?
     @Field(key: "claimed_by") var claimedBy: String?
     @Field(key: "claimed_at") var claimedAt: Date?
     @Field(key: "completed_at") var completedAt: Date?
@@ -22,5 +24,7 @@ final class WorkerJob: Model, Content, @unchecked Sendable {
         self.kind = kind
         self.status = "pending"
         self.priority = priority
+        self.retryCount = 0
+        self.nextAttemptAt = nil
     }
 }

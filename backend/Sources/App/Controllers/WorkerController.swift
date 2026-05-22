@@ -44,12 +44,13 @@ struct WorkerController: RouteCollection {
                 return lhs.priority > rhs.priority
             })
             .first,
-           let existingID = existingClaim.id,
-           let claimed = try await WorkerJob.query(on: req.db)
-            .with(\.$episode)
-            .filter(\.$id == existingID)
-            .first {
-            return try ClaimedWorkerJobResponse(job: claimed)
+           let existingID = existingClaim.id {
+            if let claimed = try await WorkerJob.query(on: req.db)
+                .with(\.$episode)
+                .filter(\.$id == existingID)
+                .first() {
+                return try ClaimedWorkerJobResponse(job: claimed)
+            }
         }
 
         let hasActiveTranscript = activeClaimsForWorker.contains {

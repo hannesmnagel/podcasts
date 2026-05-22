@@ -2,6 +2,8 @@ import Fluent
 import Vapor
 
 struct ArtifactController: RouteCollection {
+    private let transcriptPriorityBoost = 1_000_000
+    private let recencyPriorityWindowDays = 30
     private let chaptersEnabled = true
     private let validChapterSourcePrefixes = [
         "worker-openrouter-",
@@ -45,7 +47,14 @@ struct ArtifactController: RouteCollection {
         let needsTranscript = wantsTranscript && !hasTranscriptReadyForAlignment
         let needsFingerprint = wantsFingerprint && !hasFingerprint
         if needsTranscript || needsFingerprint {
-            try await ensureWorkerJob(episodeID: episodeID, kind: "transcript", priority: demand.transcriptCount * 3 + demand.fingerprintCount + podcastPriorityBoost, on: req.db)
+            let recencyBoost = recencyPriority(for: episode.publishedAt ?? .distantPast)
+            let demandBoost = demand.transcriptCount * 3 + demand.fingerprintCount + podcastPriorityBoost
+            try await ensureWorkerJob(
+                episodeID: episodeID,
+                kind: "transcript",
+                priority: transcriptPriorityBoost + recencyBoost + demandBoost,
+                on: req.db
+            )
         }
         if wantsChapters, !(try await artifactExists(episodeID: episodeID, kind: "chapters", on: req.db)) {
             try await ensureWorkerJob(episodeID: episodeID, kind: "chapters", priority: demand.chapterCount * 2 + podcastPriorityBoost, on: req.db)
@@ -227,6 +236,13 @@ struct ArtifactController: RouteCollection {
     private func isValidChapterArtifact(_ artifact: ChapterArtifact) -> Bool {
         let source = artifact.source.lowercased()
         return validChapterSourcePrefixes.contains { source.hasPrefix($0) }
+    }
+
+    private func recencyPriority(for publishedAt: Date) -> Int {
+        let daysOld = Calendar.current.dateComponents([.day], from: publishedAt, to: Date()).day ?? recencyPriorityWindowDays
+        let clampedDays = max(0, min(recencyPriorityWindowDays, daysOld))
+        let remaining = recencyPriorityWindowDays - clampedDays
+        return remaining * 1_000
     }
 
     private func findEpisode(_ req: Request) async throws -> Episode {

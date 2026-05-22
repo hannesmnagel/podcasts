@@ -335,59 +335,69 @@ struct WorkerBackendClient {
     let baseURL: URL
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
+    private let session: URLSession
+    private let maxAttempts = 5
 
     init(baseURL: URL) {
         self.baseURL = baseURL
         decoder.dateDecodingStrategy = .iso8601
         encoder.dateEncodingStrategy = .iso8601
+        let configuration = URLSessionConfiguration.default
+        configuration.timeoutIntervalForRequest = 60
+        configuration.timeoutIntervalForResource = 180
+        session = URLSession(configuration: configuration)
     }
 
     func claimJob(workerID: String, kinds: [String]? = nil) async throws -> WorkerJobDTO? {
         do {
-            return try await post("worker/jobs/claim", body: ClaimJobRequest(workerID: workerID, kinds: kinds))
+            return try await post("worker/jobs/claim", body: ClaimJobRequest(workerID: workerID, kinds: kinds), retrySafe: true)
         } catch WorkerError.noContent {
             return nil
         }
     }
 
     func uploadTranscript(_ upload: TranscriptUploadDTO, episodeID: String) async throws {
-        let _: TranscriptArtifactDTO = try await post("episodes/\(episodeID)/transcript", body: upload)
+        let _: TranscriptArtifactDTO = try await post("episodes/\(episodeID)/transcript", body: upload, retrySafe: true)
     }
 
     func transcript(episodeID: String) async throws -> TranscriptArtifactDTO? {
         do {
-            return try await get("episodes/\(episodeID)/transcript")
+            return try await get("episodes/\(episodeID)/transcript", retrySafe: true)
         } catch WorkerError.notFound {
             return nil
         }
     }
 
     func uploadChapters(_ upload: ChaptersUploadDTO, episodeID: String) async throws {
-        let _: ChapterArtifactDTO = try await post("episodes/\(episodeID)/chapters", body: upload)
+        let _: ChapterArtifactDTO = try await post("episodes/\(episodeID)/chapters", body: upload, retrySafe: true)
     }
 
     func completeJob(_ id: UUID) async throws -> WorkerJobDTO {
-        try await post("worker/jobs/\(id.uuidString)/complete", body: EmptyBody())
+        try await post("worker/jobs/\(id.uuidString)/complete", body: EmptyBody(), retrySafe: true)
     }
 
     func failJob(_ id: UUID, retry: Bool) async throws {
-        let _: WorkerJobDTO = try await post("worker/jobs/\(id.uuidString)/fail", body: FailJobRequest(retry: retry))
+        let _: WorkerJobDTO = try await post("worker/jobs/\(id.uuidString)/fail", body: FailJobRequest(retry: retry), retrySafe: true)
     }
 
-    private func post<Response: Decodable, Body: Encodable>(_ path: String, body: Body) async throws -> Response {
+    private func post<Response: Decodable, Body: Encodable>(_ path: String, body: Body, retrySafe: Bool) async throws -> Response {
         var request = URLRequest(url: url(for: path))
         request.httpMethod = "POST"
         request.addValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try encoder.encode(body)
-        let (data, response) = try await URLSession.shared.data(for: request)
-        try validate(response, data: data)
-        return try decoder.decode(Response.self, from: data)
+        return try await withRetry(enabled: retrySafe) {
+            let (data, response) = try await session.data(for: request)
+            try validate(response, data: data)
+            return try decoder.decode(Response.self, from: data)
+        }
     }
 
-    private func get<Response: Decodable>(_ path: String) async throws -> Response {
-        let (data, response) = try await URLSession.shared.data(from: url(for: path))
-        try validate(response, data: data)
-        return try decoder.decode(Response.self, from: data)
+    private func get<Response: Decodable>(_ path: String, retrySafe: Bool) async throws -> Response {
+        return try await withRetry(enabled: retrySafe) {
+            let (data, response) = try await session.data(from: url(for: path))
+            try validate(response, data: data)
+            return try decoder.decode(Response.self, from: data)
+        }
     }
 
     private func url(for path: String) -> URL {
@@ -401,6 +411,37 @@ struct WorkerBackendClient {
         guard (200..<300).contains(http.statusCode) else {
             throw WorkerError.server(status: http.statusCode, body: String(data: data, encoding: .utf8))
         }
+    }
+
+    private func withRetry<Response>(enabled: Bool, operation: @escaping () async throws -> Response) async throws -> Response {
+        var attempt = 0
+        while true {
+            do {
+                return try await operation()
+            } catch {
+                attempt += 1
+                guard enabled, attempt < maxAttempts, isRetryable(error: error) else {
+                    throw error
+                }
+                let delay = min(10, Double(1 << min(attempt - 1, 4)))
+                try await Task.sleep(for: .seconds(delay))
+            }
+        }
+    }
+
+    private func isRetryable(error: Error) -> Bool {
+        if let urlError = error as? URLError {
+            switch urlError.code {
+            case .timedOut, .cannotConnectToHost, .networkConnectionLost, .notConnectedToInternet, .cannotFindHost, .dnsLookupFailed:
+                return true
+            default:
+                return false
+            }
+        }
+        if case let WorkerError.server(status, _) = error {
+            return status == 429 || status == 502 || status == 503 || status == 504 || status == 500
+        }
+        return false
     }
 }
 
@@ -455,13 +496,61 @@ struct WhisperRunner {
             throw WorkerError.whisperOutputMissing
         }
         let data = try Data(contentsOf: jsonFile)
-        let output = try JSONDecoder().decode(WhisperOutput.self, from: data)
+        let output = try parseWhisperOutput(data)
         let segments = output.segments
             .map { TranscriptSegment(start: $0.start, end: $0.end, text: $0.text.trimmingCharacters(in: .whitespacesAndNewlines)) }
             .filter { ($0.start ?? 0) < ($0.end ?? .infinity) }  // drop zero-duration segments
             .deduplicated(maxConsecutiveIdentical: 2)             // drop hallucination loops
         let segmentsData = try JSONEncoder().encode(segments)
         return WhisperResult(language: output.language, model: command, text: output.text, segmentsJSON: String(decoding: segmentsData, as: UTF8.self), segmentCount: segments.count)
+    }
+
+    private func parseWhisperOutput(_ data: Data) throws -> WhisperOutput {
+        func decodeRaw(_ input: Data) throws -> [String: Any] {
+            guard let raw = try JSONSerialization.jsonObject(with: input) as? [String: Any] else {
+                throw WorkerError.whisperOutputMalformed("JSON root was not an object")
+            }
+            return raw
+        }
+
+        let raw: [String: Any]
+        do {
+            raw = try decodeRaw(data)
+        } catch {
+            guard let source = String(data: data, encoding: .utf8) else { throw error }
+            let sanitized = source
+                .replacingOccurrences(of: ": NaN", with: ": null")
+                .replacingOccurrences(of: ": Infinity", with: ": null")
+                .replacingOccurrences(of: ": -Infinity", with: ": null")
+            guard let repaired = sanitized.data(using: .utf8) else { throw error }
+            raw = try decodeRaw(repaired)
+        }
+
+        let text = raw["text"] as? String ?? ""
+        let language = raw["language"] as? String
+        let rawSegments = raw["segments"] as? [Any] ?? []
+        let segments: [WhisperSegment] = rawSegments.compactMap { entry in
+            guard let object = entry as? [String: Any] else { return nil }
+            let start = parseAnyDouble(object["start"])
+            let end = parseAnyDouble(object["end"])
+            let text = (object["text"] as? String) ?? ""
+            return WhisperSegment(start: start, end: end, text: text)
+        }
+        return WhisperOutput(text: text, language: language, segments: segments)
+    }
+
+    private func parseAnyDouble(_ value: Any?) -> Double? {
+        switch value {
+        case let number as NSNumber:
+            let result = number.doubleValue
+            return result.isFinite ? result : nil
+        case let string as String:
+            let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let result = Double(trimmed), result.isFinite else { return nil }
+            return result
+        default:
+            return nil
+        }
     }
 }
 
@@ -893,6 +982,7 @@ enum WorkerError: LocalizedError {
     case whisperAborted(String)
     case whisperFailed(Int32)
     case whisperOutputMissing
+    case whisperOutputMalformed(String)
     case transcriptTooShort(Int)
     case transcriptSegmentsMissing
     case chapterizationDisabled
@@ -912,6 +1002,7 @@ enum WorkerError: LocalizedError {
         case let .whisperAborted(reason): "Whisper aborted: \(reason)"
         case let .whisperFailed(status): "Whisper failed with exit code \(status)"
         case .whisperOutputMissing: "Whisper did not produce a JSON output file"
+        case let .whisperOutputMalformed(reason): "Whisper output JSON was malformed: \(reason)"
         case let .transcriptTooShort(count): "Transcript too short (\(count) chars) — likely a transcription failure"
         case .transcriptSegmentsMissing: "Transcript did not contain decodable timed segments"
         case .chapterizationDisabled: "Chapterization is disabled in the worker"

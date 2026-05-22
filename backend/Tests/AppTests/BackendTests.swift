@@ -477,4 +477,36 @@ final class BackendTests: XCTestCase {
             XCTAssertEqual(job.episode.stableID, "claimed-episode")
         })
     }
+
+    func testWorkerClaimKindsFilterSkipsExistingClaimedJobOfDifferentKind() async throws {
+        let app = try await Application.make(.testing)
+        defer { Task { try await app.asyncShutdown() } }
+        try await configure(app)
+        try await app.autoMigrate()
+
+        let podcast = Podcast(stableID: "podcast-kinds", feedURL: "https://example.com/kinds.xml", title: "Kinds")
+        try await podcast.save(on: app.db)
+        let transcriptEpisode = Episode(podcastID: try podcast.requireID(), stableID: "transcript-episode", guid: "t1", title: "Transcript Episode", audioURL: "https://example.com/t1.mp3")
+        let chapterEpisode = Episode(podcastID: try podcast.requireID(), stableID: "chapter-episode", guid: "c1", title: "Chapter Episode", audioURL: "https://example.com/c1.mp3")
+        try await transcriptEpisode.save(on: app.db)
+        try await chapterEpisode.save(on: app.db)
+
+        let claimedTranscript = WorkerJob(episodeID: try transcriptEpisode.requireID(), kind: "transcript", priority: 100)
+        claimedTranscript.status = "claimed"
+        claimedTranscript.claimedBy = "test-worker"
+        claimedTranscript.claimedAt = Date()
+        try await claimedTranscript.save(on: app.db)
+
+        let pendingChapter = WorkerJob(episodeID: try chapterEpisode.requireID(), kind: "chapters", priority: 200)
+        try await pendingChapter.save(on: app.db)
+
+        try await app.test(.POST, "worker/jobs/claim", beforeRequest: { req in
+            try req.content.encode(ClaimJobRequest(workerID: "test-worker", kinds: ["chapters"]))
+        }, afterResponse: { res async throws in
+            XCTAssertEqual(res.status, .ok)
+            let job = try res.content.decode(ClaimedWorkerJobResponse.self)
+            XCTAssertEqual(job.kind, "chapters")
+            XCTAssertEqual(job.episode.stableID, "chapter-episode")
+        })
+    }
 }

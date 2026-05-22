@@ -44,7 +44,8 @@ struct WorkerController: RouteCollection {
                 return lhs.priority > rhs.priority
             })
             .first,
-           let existingID = existingClaim.id {
+           let existingID = existingClaim.id,
+           input.kinds?.isEmpty != false || input.kinds?.contains(existingClaim.kind) == true {
             if let claimed = try await WorkerJob.query(on: req.db)
                 .with(\.$episode)
                 .filter(\.$id == existingID)

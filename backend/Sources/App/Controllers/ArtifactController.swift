@@ -56,7 +56,10 @@ struct ArtifactController: RouteCollection {
                 on: req.db
             )
         }
-        if wantsChapters, !(try await artifactExists(episodeID: episodeID, kind: "chapters", on: req.db)) {
+        let hasTranscriptForChapters = try await transcriptArtifactExists(episodeID: episodeID, on: req.db)
+        if wantsChapters,
+           hasTranscriptForChapters,
+           !(try await artifactExists(episodeID: episodeID, kind: "chapters", on: req.db)) {
             try await ensureWorkerJob(episodeID: episodeID, kind: "chapters", priority: demand.chapterCount * 2 + podcastPriorityBoost, on: req.db)
         }
         return ArtifactRequestResponse(episodeID: episode.stableID, transcriptCount: demand.transcriptCount, chapterCount: demand.chapterCount, fingerprintCount: demand.fingerprintCount)
@@ -213,6 +216,12 @@ struct ArtifactController: RouteCollection {
             return false
         }
         return transcript.segmentFingerprintsJSON?.isEmpty == false
+    }
+
+    private func transcriptArtifactExists(episodeID: UUID, on db: any Database) async throws -> Bool {
+        try await TranscriptArtifact.query(on: db)
+            .filter(\.$episode.$id == episodeID)
+            .first() != nil
     }
 
     private func artifactExists(episodeID: UUID, kind: String, on db: any Database) async throws -> Bool {

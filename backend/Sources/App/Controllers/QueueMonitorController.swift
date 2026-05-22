@@ -24,6 +24,7 @@ struct QueueMonitorController: RouteCollection {
         let jobs = try await WorkerJob.query(on: db)
             .with(\.$episode) { episode in
                 episode.with(\.$podcast)
+                episode.with(\.$transcripts)
             }
             .sort(\.$status, .ascending)
             .sort(\.$priority, .descending)
@@ -32,6 +33,8 @@ struct QueueMonitorController: RouteCollection {
 
         let summaries = try jobs.map { job in
             try QueueMonitorJobSummary(job: job)
+        }.filter { summary in
+            summary.kind != "chapters" || summary.hasTranscript
         }
 
         let pendingJobs = summaries.filter { $0.status == "pending" }
@@ -326,6 +329,7 @@ struct QueueMonitorJobSummary {
     let kind: String
     let status: String
     let priority: Int
+    let hasTranscript: Bool
     let claimedBy: String?
     let claimedAt: Date?
     let podcastTitle: String
@@ -336,6 +340,7 @@ struct QueueMonitorJobSummary {
         self.kind = job.kind
         self.status = job.status
         self.priority = job.priority
+        self.hasTranscript = !(job.episode.$transcripts.value?.isEmpty ?? true)
         self.claimedBy = job.claimedBy
         self.claimedAt = job.claimedAt
         self.podcastTitle = job.episode.$podcast.value?.title ?? "Unknown podcast"

@@ -24,9 +24,8 @@ final class BackendTests: XCTestCase {
         })
 
         let jobs = try await WorkerJob.query(on: app.db).all()
-        XCTAssertEqual(jobs.count, 2)
-        XCTAssertTrue(jobs.contains { $0.kind == "transcript" })
-        XCTAssertTrue(jobs.contains { $0.kind == "chapters" })
+        XCTAssertEqual(jobs.count, 1)
+        XCTAssertEqual(jobs.first?.kind, "transcript")
 
         let podcastDemand = try await PodcastDemand.query(on: app.db).filter(\.$podcast.$id == podcast.requireID()).first()
         XCTAssertEqual(podcastDemand?.transcriptRequests, 1)
@@ -144,7 +143,7 @@ final class BackendTests: XCTestCase {
         XCTAssertEqual(jobs.count, 1)
     }
 
-    func testCompletedChapterJobWithoutArtifactCreatesNewWorkerJob() async throws {
+    func testCompletedChapterJobWithoutArtifactDoesNotCreateJobWithoutTranscript() async throws {
         let app = try await Application.make(.testing)
         defer { Task { try await app.asyncShutdown() } }
         try await configure(app)
@@ -167,9 +166,8 @@ final class BackendTests: XCTestCase {
         })
 
         let jobs = try await WorkerJob.query(on: app.db).filter(\.$kind == "chapters").all()
-        XCTAssertEqual(jobs.count, 2)
+        XCTAssertEqual(jobs.count, 1)
         XCTAssertTrue(jobs.contains { $0.status == "completed" })
-        XCTAssertTrue(jobs.contains { $0.status == "pending" })
     }
 
     func testOldTranscriptWithoutSegmentFingerprintsIsRequeued() async throws {
@@ -285,6 +283,15 @@ final class BackendTests: XCTestCase {
         let pendingJob = WorkerJob(episodeID: try episode.requireID(), kind: "transcript", priority: 7)
         try await pendingJob.save(on: app.db)
 
+        let transcript = TranscriptArtifact()
+        transcript.$episode.id = try episode.requireID()
+        transcript.locale = "en"
+        transcript.model = "test"
+        transcript.segmentsJSON = "[]"
+        transcript.segmentFingerprintsJSON = "[]"
+        transcript.textHash = "hash"
+        try await transcript.save(on: app.db)
+
         let claimedJob = WorkerJob(episodeID: try episode.requireID(), kind: "chapters", priority: 3)
         claimedJob.status = "claimed"
         claimedJob.claimedBy = "test-worker"
@@ -314,5 +321,37 @@ final class BackendTests: XCTestCase {
             StableID.podcastID(feedURL: "HTTPS://EXAMPLE.COM/feed.xml#fragment"),
             StableID.podcastID(feedURL: "https://example.com/feed.xml")
         )
+    }
+
+    func testWorkerDoesNotClaimSecondTranscriptForSameWorker() async throws {
+        let app = try await Application.make(.testing)
+        defer { Task { try await app.asyncShutdown() } }
+        try await configure(app)
+        try await app.autoMigrate()
+
+        let podcast = Podcast(stableID: "podcast-stable", feedURL: "https://example.com/feed.xml", title: "Example")
+        try await podcast.save(on: app.db)
+
+        let firstEpisode = Episode(podcastID: try podcast.requireID(), stableID: "episode-1", guid: "1", title: "Episode 1", audioURL: "https://example.com/1.mp3")
+        let secondEpisode = Episode(podcastID: try podcast.requireID(), stableID: "episode-2", guid: "2", title: "Episode 2", audioURL: "https://example.com/2.mp3")
+        try await firstEpisode.save(on: app.db)
+        try await secondEpisode.save(on: app.db)
+
+        let firstJob = WorkerJob(episodeID: try firstEpisode.requireID(), kind: "transcript", priority: 100)
+        let secondJob = WorkerJob(episodeID: try secondEpisode.requireID(), kind: "transcript", priority: 90)
+        try await firstJob.save(on: app.db)
+        try await secondJob.save(on: app.db)
+
+        try await app.test(.POST, "worker/jobs/claim", beforeRequest: { req in
+            try req.content.encode(ClaimJobRequest(workerID: "test-worker"))
+        }, afterResponse: { res async throws in
+            XCTAssertEqual(res.status, .ok)
+        })
+
+        try await app.test(.POST, "worker/jobs/claim", beforeRequest: { req in
+            try req.content.encode(ClaimJobRequest(workerID: "test-worker"))
+        }, afterResponse: { res async throws in
+            XCTAssertEqual(res.status, .noContent)
+        })
     }
 }

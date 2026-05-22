@@ -17,10 +17,28 @@ struct WorkerController: RouteCollection {
 
     func claim(req: Request) async throws -> ClaimedWorkerJobResponse {
         let input = try req.content.decode(ClaimJobRequest.self)
+        let activeKindsForWorker = try await WorkerJob.query(on: req.db)
+            .filter(\.$status == "claimed")
+            .filter(\.$claimedBy == input.workerID)
+            .all()
+            .map(\.kind)
+        let hasActiveTranscript = activeKindsForWorker.contains("transcript")
+
+        var allowedKinds = input.kinds
+        if hasActiveTranscript {
+            if let kinds = allowedKinds {
+                allowedKinds = kinds.filter { $0 != "transcript" }
+            } else {
+                allowedKinds = ["chapters"]
+            }
+        }
+
         for _ in 0..<3 {
-            var pending = try await nextPendingJob(kinds: input.kinds, on: req.db)
+            var pending = try await nextPendingJob(kinds: allowedKinds, on: req.db)
             if pending == nil {
-                pending = try await seedBacklogTranscriptJob(on: req.db)
+                if hasActiveTranscript == false {
+                    pending = try await seedBacklogTranscriptJob(on: req.db)
+                }
             }
             guard let candidate = pending else { throw Abort(.noContent) }
             let candidateID = try candidate.requireID()

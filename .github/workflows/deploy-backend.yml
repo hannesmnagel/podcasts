@@ -33,6 +33,16 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v6
+      - name: Cache SwiftPM and .build
+        uses: actions/cache@v4
+        with:
+          path: |
+            backend/.build
+            /github/home/.swiftpm
+            /github/home/.cache/org.swift.swiftpm
+          key: ${{ runner.os }}-backend-test-swift62-${{ hashFiles('backend/Package.resolved') }}
+          restore-keys: |
+            ${{ runner.os }}-backend-test-swift62-
       - name: Run Swift tests with filtered output
         run: |
           set +e
@@ -64,8 +74,8 @@ jobs:
           tags: |
             ${{ env.IMAGE_NAME }}:latest
             ${{ env.IMAGE_NAME }}:${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=podcasts-backend-docker
+          cache-to: type=gha,mode=max,scope=podcasts-backend-docker
 
   deploy:
     name: Deploy on server

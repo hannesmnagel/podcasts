@@ -1,10 +1,22 @@
+# syntax=docker/dockerfile:1.7
+
 FROM swift:6.2-noble AS build
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 WORKDIR /build
 COPY Package.swift Package.resolved ./
+
+# Cache dependency resolution separately so source-only changes avoid redownloading.
+RUN --mount=type=cache,id=podcasts-swiftpm,target=/root/.swiftpm \
+    --mount=type=cache,id=podcasts-swiftpm-cache,target=/root/.cache/org.swift.swiftpm \
+    swift package resolve
+
 COPY Sources ./Sources
 COPY Tests ./Tests
-RUN set +e; \
+
+RUN --mount=type=cache,id=podcasts-build,target=/build/.build \
+    --mount=type=cache,id=podcasts-swiftpm,target=/root/.swiftpm \
+    --mount=type=cache,id=podcasts-swiftpm-cache,target=/root/.cache/org.swift.swiftpm \
+    set +e; \
     swift build -c release --product PodcastBackend -j 2 2>&1 \
       | tee /tmp/swift-build.log \
       | grep -E "(^error:|^warning:|BUILD|FAILED|Build complete|fatal error|^/build/)" || true; \

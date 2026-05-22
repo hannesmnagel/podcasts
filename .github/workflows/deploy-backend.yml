@@ -105,7 +105,18 @@ jobs:
           chmod 700 ~/.ssh
           echo "${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-          ssh-keyscan -H "${{ env.SERVER_HOST }}" >> ~/.ssh/known_hosts
+          touch ~/.ssh/known_hosts
+          for attempt in 1 2 3 4 5; do
+            if ssh-keyscan -T 10 -H "${{ env.SERVER_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null; then
+              break
+            fi
+            echo "ssh-keyscan attempt ${attempt} failed, retrying..."
+            sleep 5
+          done
+          ssh-keygen -F "${{ env.SERVER_HOST }}" -f ~/.ssh/known_hosts >/dev/null || {
+            echo "Failed to add ${SERVER_HOST} to known_hosts after retries"
+            exit 1
+          }
       - name: Pull and restart Compose stack
         run: |
           ssh "${{ env.SERVER_USER }}@${{ env.SERVER_HOST }}" \

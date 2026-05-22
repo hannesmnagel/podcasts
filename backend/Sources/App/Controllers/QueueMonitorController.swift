@@ -19,6 +19,7 @@ struct QueueMonitorController: RouteCollection {
             .flatMap(Int.init) ?? 7_200
         let now = Date()
         let cutoff = now.addingTimeInterval(TimeInterval(-timeoutSeconds))
+        let oneHourCutoff = now.addingTimeInterval(-3600)
 
         let jobs = try await WorkerJob.query(on: db)
             .with(\.$episode) { episode in
@@ -36,6 +37,12 @@ struct QueueMonitorController: RouteCollection {
         let pendingJobs = summaries.filter { $0.status == "pending" }
         let claimedJobs = summaries.filter { $0.status == "claimed" }
         let staleClaimedJobs = claimedJobs.filter { $0.claimedAt.map { $0 < cutoff } ?? false }
+        let completedLastHourCount = jobs.filter {
+            $0.status == "completed" && (($0.completedAt ?? $0.updatedAt) ?? .distantPast) >= oneHourCutoff
+        }.count
+        let failedLastHourCount = jobs.filter {
+            $0.status == "failed" && ($0.updatedAt ?? .distantPast) >= oneHourCutoff
+        }.count
 
         return QueueMonitorSnapshot(
             generatedAt: now,
@@ -46,7 +53,9 @@ struct QueueMonitorController: RouteCollection {
             claimedJobs: claimedJobs,
             completedJobs: summaries.filter { $0.status == "completed" },
             failedJobs: summaries.filter { $0.status == "failed" },
-            staleClaimedJobs: staleClaimedJobs
+            staleClaimedJobs: staleClaimedJobs,
+            completedLastHourCount: completedLastHourCount,
+            failedLastHourCount: failedLastHourCount
         )
     }
 
@@ -106,7 +115,7 @@ struct QueueMonitorController: RouteCollection {
                 }
                 .summary {
                     display: grid;
-                    grid-template-columns: repeat(5, minmax(0, 1fr));
+                    grid-template-columns: repeat(7, minmax(0, 1fr));
                     gap: 12px;
                     margin-bottom: 22px;
                 }
@@ -190,6 +199,8 @@ struct QueueMonitorController: RouteCollection {
                     \(metricCard(label: "Pending", value: snapshot.pendingJobs.count, hint: "Ready to be claimed"))
                     \(metricCard(label: "Claimed", value: snapshot.claimedJobs.count, hint: "Currently owned by a worker"))
                     \(metricCard(label: "Completed", value: snapshot.completedJobs.count, hint: "Finished jobs"))
+                    \(metricCard(label: "Completed 1h", value: snapshot.completedLastHourCount, hint: "Completed in the last hour"))
+                    \(metricCard(label: "Failed 1h", value: snapshot.failedLastHourCount, hint: "Failed in the last hour"))
                     \(metricCard(label: "Watchdog", value: snapshot.staleClaimedJobs.count, hint: "Claimed longer than \(snapshot.watchdogTimeoutSeconds)s"))
                 </section>
 
@@ -206,6 +217,8 @@ struct QueueMonitorController: RouteCollection {
                             <tr><th>Stale claim timeout</th><td>\(snapshot.watchdogTimeoutSeconds) seconds</td></tr>
                             <tr><th>Stale claimed jobs</th><td>\(snapshot.staleClaimedJobs.count)</td></tr>
                             <tr><th>Failed jobs</th><td>\(snapshot.failedJobs.count)</td></tr>
+                            <tr><th>Completed last hour</th><td>\(snapshot.completedLastHourCount)</td></tr>
+                            <tr><th>Failed last hour</th><td>\(snapshot.failedLastHourCount)</td></tr>
                         </tbody>
                     </table>
                 </section>
@@ -304,6 +317,8 @@ struct QueueMonitorSnapshot {
     let completedJobs: [QueueMonitorJobSummary]
     let failedJobs: [QueueMonitorJobSummary]
     let staleClaimedJobs: [QueueMonitorJobSummary]
+    let completedLastHourCount: Int
+    let failedLastHourCount: Int
 }
 
 struct QueueMonitorJobSummary {

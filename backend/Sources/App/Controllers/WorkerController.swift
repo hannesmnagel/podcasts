@@ -110,18 +110,47 @@ struct WorkerController: RouteCollection {
             }
         }
         let pending = try await query.all()
+        let episodeIDs = Set(pending.map(\.$episode.id))
+        let artifactRequests = try await ArtifactRequest.query(on: db)
+            .all()
+            .filter { episodeIDs.contains($0.$episode.id) }
+        let requestsByEpisodeID = Dictionary(uniqueKeysWithValues: artifactRequests.map { ($0.$episode.id, $0.transcriptCount) })
+
+        let podcastIDs = Set(pending.map { $0.episode.$podcast.id })
+        let podcastDemands = try await PodcastDemand.query(on: db)
+            .all()
+            .filter { podcastIDs.contains($0.$podcast.id) }
+        let demandByPodcastID = Dictionary(uniqueKeysWithValues: podcastDemands.map { ($0.$podcast.id, $0.priorityScore) })
+
         return pending.max { lhs, rhs in
-            jobSortKey(lhs) < jobSortKey(rhs)
+            jobSortKey(
+                lhs,
+                transcriptRequests: requestsByEpisodeID[lhs.$episode.id] ?? 0,
+                podcastDemandScore: demandByPodcastID[lhs.episode.$podcast.id] ?? 0
+            ) < jobSortKey(
+                rhs,
+                transcriptRequests: requestsByEpisodeID[rhs.$episode.id] ?? 0,
+                podcastDemandScore: demandByPodcastID[rhs.episode.$podcast.id] ?? 0
+            )
         }
     }
 
-    private func jobSortKey(_ job: WorkerJob) -> (Int, Date, Date, UUID) {
+    private func jobSortKey(_ job: WorkerJob, transcriptRequests: Int, podcastDemandScore: Int) -> (Int, Int, Int, Int, Date, Date, UUID) {
         let episodePublishedAt = job.episode.publishedAt ?? .distantPast
         let kindBoost = job.kind == "transcript" ? transcriptPriorityBoost : 0
         let recencyBoost = recencyPriority(for: episodePublishedAt)
+        let isNew = recencyBoost > 0
+        let hasEpisodeRequest = transcriptRequests > 0
+        let podcastIsHot = podcastDemandScore > 0
+        let tier: Int = {
+            if isNew && hasEpisodeRequest { return 3 }
+            if isNew && podcastIsHot { return 2 }
+            if !isNew && hasEpisodeRequest { return 1 }
+            return 0
+        }()
         let createdAt = job.createdAt ?? .distantPast
         let id = job.id ?? UUID()
-        return (job.priority + kindBoost + recencyBoost, episodePublishedAt, createdAt, id)
+        return (tier, recencyBoost, transcriptRequests, job.priority + kindBoost + podcastDemandScore, episodePublishedAt, createdAt, id)
     }
 
     private func recencyPriority(for publishedAt: Date) -> Int {

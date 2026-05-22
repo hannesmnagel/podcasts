@@ -354,4 +354,65 @@ final class BackendTests: XCTestCase {
             XCTAssertEqual(res.status, .noContent)
         })
     }
+
+    func testWorkerPriorityTiersPreferNewRequestedThenNewHotPodcastThenOldRequested() async throws {
+        let app = try await Application.make(.testing)
+        defer { Task { try await app.asyncShutdown() } }
+        try await configure(app)
+        try await app.autoMigrate()
+
+        let coldPodcast = Podcast(stableID: "cold-podcast", feedURL: "https://example.com/cold.xml", title: "Cold")
+        let hotPodcast = Podcast(stableID: "hot-podcast", feedURL: "https://example.com/hot.xml", title: "Hot")
+        try await coldPodcast.save(on: app.db)
+        try await hotPodcast.save(on: app.db)
+
+        let now = Date()
+        let oldDate = Calendar.current.date(byAdding: .day, value: -120, to: now) ?? .distantPast
+        let newDate = Calendar.current.date(byAdding: .day, value: -1, to: now) ?? now
+
+        let newRequested = Episode(podcastID: try coldPodcast.requireID(), stableID: "new-requested", guid: "nr", title: "New Requested", audioURL: "https://example.com/nr.mp3", publishedAt: newDate)
+        let newHotPodcast = Episode(podcastID: try hotPodcast.requireID(), stableID: "new-hot", guid: "nh", title: "New Hot", audioURL: "https://example.com/nh.mp3", publishedAt: newDate)
+        let oldRequested = Episode(podcastID: try coldPodcast.requireID(), stableID: "old-requested", guid: "or", title: "Old Requested", audioURL: "https://example.com/or.mp3", publishedAt: oldDate)
+        try await newRequested.save(on: app.db)
+        try await newHotPodcast.save(on: app.db)
+        try await oldRequested.save(on: app.db)
+
+        let hotDemand = PodcastDemand(podcastID: try hotPodcast.requireID())
+        hotDemand.transcriptRequests = 10
+        try await hotDemand.save(on: app.db)
+
+        let reqNew = ArtifactRequest(episodeID: try newRequested.requireID())
+        reqNew.transcriptCount = 2
+        try await reqNew.save(on: app.db)
+        let reqOld = ArtifactRequest(episodeID: try oldRequested.requireID())
+        reqOld.transcriptCount = 3
+        try await reqOld.save(on: app.db)
+
+        let j1 = WorkerJob(episodeID: try newRequested.requireID(), kind: "transcript", priority: 1)
+        let j2 = WorkerJob(episodeID: try newHotPodcast.requireID(), kind: "transcript", priority: 1)
+        let j3 = WorkerJob(episodeID: try oldRequested.requireID(), kind: "transcript", priority: 1)
+        try await j1.save(on: app.db)
+        try await j2.save(on: app.db)
+        try await j3.save(on: app.db)
+
+        try await app.test(.POST, "worker/jobs/claim", beforeRequest: { req in
+            try req.content.encode(ClaimJobRequest(workerID: "worker-a"))
+        }, afterResponse: { res async throws in
+            XCTAssertEqual(res.status, .ok)
+            let job = try res.content.decode(ClaimedWorkerJobResponse.self)
+            XCTAssertEqual(job.episode.stableID, "new-requested")
+        })
+
+        j1.status = "completed"
+        j1.completedAt = Date()
+        try await j1.save(on: app.db)
+
+        try await app.test(.POST, "worker/jobs/claim", beforeRequest: { req in
+            try req.content.encode(ClaimJobRequest(workerID: "worker-b"))
+        }, afterResponse: { res async throws in
+            XCTAssertEqual(res.status, .ok)
+            let job = try res.content.decode(ClaimedWorkerJobResponse.self)
+            XCTAssertEqual(job.episode.stableID, "new-hot")
+        })
+    }
 }

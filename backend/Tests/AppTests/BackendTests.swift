@@ -415,4 +415,35 @@ final class BackendTests: XCTestCase {
             XCTAssertEqual(job.episode.stableID, "new-hot")
         })
     }
+
+    func testStaleClaimDoesNotBlockTranscriptClaimForSameWorker() async throws {
+        let app = try await Application.make(.testing)
+        defer { Task { try await app.asyncShutdown() } }
+        try await configure(app)
+        try await app.autoMigrate()
+
+        let podcast = Podcast(stableID: "podcast-stale", feedURL: "https://example.com/stale.xml", title: "Stale")
+        try await podcast.save(on: app.db)
+        let staleEpisode = Episode(podcastID: try podcast.requireID(), stableID: "stale-episode", guid: "s1", title: "Stale Episode", audioURL: "https://example.com/s1.mp3")
+        let freshEpisode = Episode(podcastID: try podcast.requireID(), stableID: "fresh-episode", guid: "f1", title: "Fresh Episode", audioURL: "https://example.com/f1.mp3")
+        try await staleEpisode.save(on: app.db)
+        try await freshEpisode.save(on: app.db)
+
+        let staleClaimed = WorkerJob(episodeID: try staleEpisode.requireID(), kind: "transcript", priority: 100)
+        staleClaimed.status = "claimed"
+        staleClaimed.claimedBy = "test-worker"
+        staleClaimed.claimedAt = Date(timeIntervalSinceNow: -7_300) // older than default 7200s timeout
+        try await staleClaimed.save(on: app.db)
+
+        let pending = WorkerJob(episodeID: try freshEpisode.requireID(), kind: "transcript", priority: 90)
+        try await pending.save(on: app.db)
+
+        try await app.test(.POST, "worker/jobs/claim", beforeRequest: { req in
+            try req.content.encode(ClaimJobRequest(workerID: "test-worker"))
+        }, afterResponse: { res async throws in
+            XCTAssertEqual(res.status, .ok)
+            let job = try res.content.decode(ClaimedWorkerJobResponse.self)
+            XCTAssertEqual(job.episode.stableID, "fresh-episode")
+        })
+    }
 }

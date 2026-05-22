@@ -17,12 +17,27 @@ struct WorkerController: RouteCollection {
 
     func claim(req: Request) async throws -> ClaimedWorkerJobResponse {
         let input = try req.content.decode(ClaimJobRequest.self)
-        let activeKindsForWorker = try await WorkerJob.query(on: req.db)
+        let timeoutSeconds = Environment.get("WORKER_JOB_TIMEOUT_SECONDS")
+            .flatMap(Double.init) ?? 7_200
+        let cutoff = Date().addingTimeInterval(-timeoutSeconds)
+
+        // Opportunistically reap stale claims on each claim request so dead
+        // claims cannot throttle throughput for hours until the periodic reaper runs.
+        try await WorkerJob.query(on: req.db)
+            .filter(\.$status == "claimed")
+            .filter(\.$claimedAt < cutoff)
+            .set(\.$status, to: "pending")
+            .set(\.$claimedBy, to: nil)
+            .set(\.$claimedAt, to: nil)
+            .update()
+
+        let activeClaimsForWorker = try await WorkerJob.query(on: req.db)
             .filter(\.$status == "claimed")
             .filter(\.$claimedBy == input.workerID)
             .all()
-            .map(\.kind)
-        let hasActiveTranscript = activeKindsForWorker.contains("transcript")
+        let hasActiveTranscript = activeClaimsForWorker.contains {
+            $0.kind == "transcript" && (($0.claimedAt ?? .distantFuture) >= cutoff)
+        }
 
         var allowedKinds = input.kinds
         if hasActiveTranscript {

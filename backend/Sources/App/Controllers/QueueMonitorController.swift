@@ -24,15 +24,18 @@ struct QueueMonitorController: RouteCollection {
         let jobs = try await WorkerJob.query(on: db)
             .with(\.$episode) { episode in
                 episode.with(\.$podcast)
-                episode.with(\.$transcripts)
             }
             .sort(\.$status, .ascending)
             .sort(\.$priority, .descending)
             .sort(\.$createdAt, .ascending)
             .all()
 
+        let transcriptEpisodeIDs = Set(try await TranscriptArtifact.query(on: db)
+            .all()
+            .map { $0.$episode.id })
+
         let summaries = try jobs.map { job in
-            try QueueMonitorJobSummary(job: job)
+            try QueueMonitorJobSummary(job: job, hasTranscript: transcriptEpisodeIDs.contains(job.$episode.id))
         }.filter { summary in
             summary.kind != "chapters" || summary.hasTranscript
         }
@@ -335,12 +338,12 @@ struct QueueMonitorJobSummary {
     let podcastTitle: String
     let episodeTitle: String
 
-    init(job: WorkerJob) throws {
+    init(job: WorkerJob, hasTranscript: Bool) throws {
         self.id = try job.requireID()
         self.kind = job.kind
         self.status = job.status
         self.priority = job.priority
-        self.hasTranscript = !(job.episode.$transcripts.value?.isEmpty ?? true)
+        self.hasTranscript = hasTranscript
         self.claimedBy = job.claimedBy
         self.claimedAt = job.claimedAt
         self.podcastTitle = job.episode.$podcast.value?.title ?? "Unknown podcast"

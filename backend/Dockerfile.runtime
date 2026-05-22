@@ -1,0 +1,7 @@
+FROM swift:6.2-noble-slim
+WORKDIR /app
+COPY PodcastBackend /app/PodcastBackend
+ENV HOSTNAME=0.0.0.0
+ENV PORT=8080
+EXPOSE 8080
+CMD ["sh", "-c", "./PodcastBackend migrate --yes && ./PodcastBackend serve --hostname 0.0.0.0 --port ${PORT}"]

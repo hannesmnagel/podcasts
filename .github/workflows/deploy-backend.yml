@@ -54,6 +54,15 @@ jobs:
             tail -160 /tmp/swift-test.log
             exit "$status"
           fi
+      - name: Build release backend binary
+        run: swift build -c release --product PodcastBackend -j 2
+      - name: Upload release backend binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: podcast-backend-linux-binary
+          path: backend/.build/release/PodcastBackend
+          if-no-files-found: error
+          retention-days: 1
 
   build-and-push:
     name: Build and push Docker image
@@ -61,6 +70,13 @@ jobs:
     needs: test
     steps:
       - uses: actions/checkout@v6
+      - name: Download release backend binary
+        uses: actions/download-artifact@v4
+        with:
+          name: podcast-backend-linux-binary
+          path: backend
+      - name: Ensure backend binary is executable
+        run: chmod +x backend/PodcastBackend
       - uses: docker/setup-buildx-action@v4
       - uses: docker/login-action@v4
         with:
@@ -70,6 +86,7 @@ jobs:
       - uses: docker/build-push-action@v7
         with:
           context: backend
+          file: backend/Dockerfile.runtime
           push: true
           tags: |
             ${{ env.IMAGE_NAME }}:latest

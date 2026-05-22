@@ -135,7 +135,7 @@ struct WorkerController: RouteCollection {
         }
     }
 
-    private func jobSortKey(_ job: WorkerJob, transcriptRequests: Int, podcastDemandScore: Int) -> (Int, Int, Int, Int, Date, Date, UUID) {
+    private func jobSortKey(_ job: WorkerJob, transcriptRequests: Int, podcastDemandScore: Int) -> JobSortKey {
         let episodePublishedAt = job.episode.publishedAt ?? .distantPast
         let kindBoost = job.kind == "transcript" ? transcriptPriorityBoost : 0
         let recencyBoost = recencyPriority(for: episodePublishedAt)
@@ -150,7 +150,15 @@ struct WorkerController: RouteCollection {
         }()
         let createdAt = job.createdAt ?? .distantPast
         let id = job.id ?? UUID()
-        return (tier, recencyBoost, transcriptRequests, job.priority + kindBoost + podcastDemandScore, episodePublishedAt, createdAt, id)
+        return JobSortKey(
+            tier: tier,
+            recencyBoost: recencyBoost,
+            transcriptRequests: transcriptRequests,
+            score: job.priority + kindBoost + podcastDemandScore,
+            publishedAt: episodePublishedAt,
+            createdAt: createdAt,
+            id: id
+        )
     }
 
     private func recencyPriority(for publishedAt: Date) -> Int {
@@ -234,6 +242,26 @@ struct WorkerController: RouteCollection {
             throw Abort(.notFound)
         }
         return job
+    }
+}
+
+private struct JobSortKey: Comparable {
+    let tier: Int
+    let recencyBoost: Int
+    let transcriptRequests: Int
+    let score: Int
+    let publishedAt: Date
+    let createdAt: Date
+    let id: UUID
+
+    static func < (lhs: JobSortKey, rhs: JobSortKey) -> Bool {
+        if lhs.tier != rhs.tier { return lhs.tier < rhs.tier }
+        if lhs.recencyBoost != rhs.recencyBoost { return lhs.recencyBoost < rhs.recencyBoost }
+        if lhs.transcriptRequests != rhs.transcriptRequests { return lhs.transcriptRequests < rhs.transcriptRequests }
+        if lhs.score != rhs.score { return lhs.score < rhs.score }
+        if lhs.publishedAt != rhs.publishedAt { return lhs.publishedAt < rhs.publishedAt }
+        if lhs.createdAt != rhs.createdAt { return lhs.createdAt < rhs.createdAt }
+        return lhs.id.uuidString < rhs.id.uuidString
     }
 }
 

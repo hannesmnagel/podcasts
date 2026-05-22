@@ -35,6 +35,23 @@ struct WorkerController: RouteCollection {
             .filter(\.$status == "claimed")
             .filter(\.$claimedBy == input.workerID)
             .all()
+        if let existingClaim = activeClaimsForWorker
+            .filter({ ($0.claimedAt ?? .distantFuture) >= cutoff })
+            .sorted(by: { lhs, rhs in
+                let lhsClaimedAt = lhs.claimedAt ?? .distantPast
+                let rhsClaimedAt = rhs.claimedAt ?? .distantPast
+                if lhsClaimedAt != rhsClaimedAt { return lhsClaimedAt > rhsClaimedAt }
+                return lhs.priority > rhs.priority
+            })
+            .first,
+           let existingID = existingClaim.id,
+           let claimed = try await WorkerJob.query(on: req.db)
+            .with(\.$episode)
+            .filter(\.$id == existingID)
+            .first {
+            return try ClaimedWorkerJobResponse(job: claimed)
+        }
+
         let hasActiveTranscript = activeClaimsForWorker.contains {
             $0.kind == "transcript" && (($0.claimedAt ?? .distantFuture) >= cutoff)
         }

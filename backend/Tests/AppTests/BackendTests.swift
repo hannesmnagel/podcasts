@@ -446,4 +446,35 @@ final class BackendTests: XCTestCase {
             XCTAssertEqual(job.episode.stableID, "fresh-episode")
         })
     }
+
+    func testWorkerClaimReturnsExistingClaimForSameWorker() async throws {
+        let app = try await Application.make(.testing)
+        defer { Task { try await app.asyncShutdown() } }
+        try await configure(app)
+        try await app.autoMigrate()
+
+        let podcast = Podcast(stableID: "podcast-resume", feedURL: "https://example.com/resume.xml", title: "Resume")
+        try await podcast.save(on: app.db)
+        let claimedEpisode = Episode(podcastID: try podcast.requireID(), stableID: "claimed-episode", guid: "c1", title: "Claimed Episode", audioURL: "https://example.com/c1.mp3")
+        let pendingEpisode = Episode(podcastID: try podcast.requireID(), stableID: "pending-episode", guid: "p1", title: "Pending Episode", audioURL: "https://example.com/p1.mp3")
+        try await claimedEpisode.save(on: app.db)
+        try await pendingEpisode.save(on: app.db)
+
+        let claimed = WorkerJob(episodeID: try claimedEpisode.requireID(), kind: "transcript", priority: 50)
+        claimed.status = "claimed"
+        claimed.claimedBy = "test-worker"
+        claimed.claimedAt = Date()
+        try await claimed.save(on: app.db)
+
+        let pending = WorkerJob(episodeID: try pendingEpisode.requireID(), kind: "transcript", priority: 100)
+        try await pending.save(on: app.db)
+
+        try await app.test(.POST, "worker/jobs/claim", beforeRequest: { req in
+            try req.content.encode(ClaimJobRequest(workerID: "test-worker"))
+        }, afterResponse: { res async throws in
+            XCTAssertEqual(res.status, .ok)
+            let job = try res.content.decode(ClaimedWorkerJobResponse.self)
+            XCTAssertEqual(job.episode.stableID, "claimed-episode")
+        })
+    }
 }

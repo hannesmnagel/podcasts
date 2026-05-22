@@ -115,7 +115,9 @@ enum PodcastWorker {
                     switch job.kind {
                     case "transcript":
                         guard await runState.canStartTranscript() else {
-                            try await client.failJob(job.id, retry: true)
+                            // The backend may return an existing claimed transcript for this
+                            // worker while it's already processing one; don't requeue it.
+                            try await Task.sleep(for: .seconds(1))
                             continue
                         }
                         await runState.markTranscriptRunning(true)
@@ -129,7 +131,9 @@ enum PodcastWorker {
                         }
                     case "chapters":
                         guard await runState.canStartChapter() else {
-                            try await client.failJob(job.id, retry: true)
+                            // Same as transcript: avoid requeue churn when we re-claim an
+                            // already-running chapter job for this worker.
+                            try await Task.sleep(for: .seconds(1))
                             continue
                         }
                         await runState.markChapterRunning(true)

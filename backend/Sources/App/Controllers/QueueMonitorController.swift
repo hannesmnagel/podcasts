@@ -66,7 +66,7 @@ struct QueueMonitorController: RouteCollection {
     }
 
     static func renderHTML(snapshot: QueueMonitorSnapshot) -> String {
-        let pendingRows = renderRows(jobs: snapshot.pendingJobs, emptyMessage: "No pending jobs.")
+        let pendingRows = renderRows(jobs: Array(snapshot.pendingJobs.prefix(5)), emptyMessage: "No pending jobs.")
         let claimedRows = renderRows(jobs: snapshot.claimedJobs, emptyMessage: "No claimed jobs.")
         let staleBadge = snapshot.staleClaimedJobs.isEmpty ? "Healthy" : "\(snapshot.staleClaimedJobs.count) stale"
         return """

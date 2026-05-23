@@ -17,7 +17,10 @@ struct BackendClient: Sendable {
         }
     }
 
-    func podcasts() async throws -> [PodcastDTO] { try await get("podcasts") }
+    func podcasts(limit: Int = 500) async throws -> [PodcastDTO] {
+        let clamped = min(max(limit, 1), 500)
+        return try await get("podcasts?limit=\(clamped)")
+    }
 
     func optimisticPodcast(feedURL: URL, title: String? = nil, imageURL: String? = nil) -> PodcastDTO {
         let trimmedTitle = title?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -71,8 +74,9 @@ struct BackendClient: Sendable {
         try await get("episodes?limit=\(limit)")
     }
 
-    func episodes(for podcastID: String) async throws -> [EpisodeDTO] {
-        try await get("podcasts/\(podcastID)/episodes")
+    func episodes(for podcastID: String, limit: Int = 1000) async throws -> [EpisodeDTO] {
+        let clamped = min(max(limit, 1), 1000)
+        return try await get("podcasts/\(podcastID)/episodes?limit=\(clamped)")
     }
 
     func search(_ query: String) async throws -> EpisodeSearchDTO {

@@ -43,11 +43,25 @@ struct QueueMonitorController: RouteCollection {
         let pendingJobs = summaries.filter { $0.status == "pending" }
         let claimedJobs = summaries.filter { $0.status == "claimed" }
         let staleClaimedJobs = claimedJobs.filter { $0.claimedAt.map { $0 < cutoff } ?? false }
-        let completedLastHourCount = jobs.filter {
-            $0.status == "completed" && (($0.completedAt ?? $0.updatedAt) ?? .distantPast) >= oneHourCutoff
+        let completedTranscriptLastHourCount = jobs.filter {
+            $0.kind == "transcript" &&
+            $0.status == "completed" &&
+            (($0.completedAt ?? $0.updatedAt) ?? .distantPast) >= oneHourCutoff
         }.count
-        let failedLastHourCount = jobs.filter {
-            $0.status == "failed" && ($0.updatedAt ?? .distantPast) >= oneHourCutoff
+        let failedTranscriptLastHourCount = jobs.filter {
+            $0.kind == "transcript" &&
+            $0.status == "failed" &&
+            ($0.updatedAt ?? .distantPast) >= oneHourCutoff
+        }.count
+        let completedChapterLastHourCount = jobs.filter {
+            $0.kind == "chapters" &&
+            $0.status == "completed" &&
+            (($0.completedAt ?? $0.updatedAt) ?? .distantPast) >= oneHourCutoff
+        }.count
+        let failedChapterLastHourCount = jobs.filter {
+            $0.kind == "chapters" &&
+            $0.status == "failed" &&
+            ($0.updatedAt ?? .distantPast) >= oneHourCutoff
         }.count
 
         return QueueMonitorSnapshot(
@@ -60,8 +74,10 @@ struct QueueMonitorController: RouteCollection {
             completedJobs: summaries.filter { $0.status == "completed" },
             failedJobs: summaries.filter { $0.status == "failed" },
             staleClaimedJobs: staleClaimedJobs,
-            completedLastHourCount: completedLastHourCount,
-            failedLastHourCount: failedLastHourCount
+            completedTranscriptLastHourCount: completedTranscriptLastHourCount,
+            failedTranscriptLastHourCount: failedTranscriptLastHourCount,
+            completedChapterLastHourCount: completedChapterLastHourCount,
+            failedChapterLastHourCount: failedChapterLastHourCount
         )
     }
 
@@ -205,8 +221,8 @@ struct QueueMonitorController: RouteCollection {
                     \(metricCard(label: "Pending", value: snapshot.pendingJobs.count, hint: "Ready to be claimed"))
                     \(metricCard(label: "Claimed", value: snapshot.claimedJobs.count, hint: "Currently owned by a worker"))
                     \(metricCard(label: "Completed", value: snapshot.completedJobs.count, hint: "Finished jobs"))
-                    \(metricCard(label: "Completed 1h", value: snapshot.completedLastHourCount, hint: "Completed in the last hour"))
-                    \(metricCard(label: "Failed 1h", value: snapshot.failedLastHourCount, hint: "Failed in the last hour"))
+                    \(metricCard(label: "Transcript Done 1h", value: snapshot.completedTranscriptLastHourCount, hint: "Transcript jobs completed in the last hour"))
+                    \(metricCard(label: "Transcript Fail 1h", value: snapshot.failedTranscriptLastHourCount, hint: "Transcript jobs failed in the last hour"))
                     \(metricCard(label: "Watchdog", value: snapshot.staleClaimedJobs.count, hint: "Claimed longer than \(snapshot.watchdogTimeoutSeconds)s"))
                 </section>
 
@@ -223,8 +239,10 @@ struct QueueMonitorController: RouteCollection {
                             <tr><th>Stale claim timeout</th><td>\(snapshot.watchdogTimeoutSeconds) seconds</td></tr>
                             <tr><th>Stale claimed jobs</th><td>\(snapshot.staleClaimedJobs.count)</td></tr>
                             <tr><th>Failed jobs</th><td>\(snapshot.failedJobs.count)</td></tr>
-                            <tr><th>Completed last hour</th><td>\(snapshot.completedLastHourCount)</td></tr>
-                            <tr><th>Failed last hour</th><td>\(snapshot.failedLastHourCount)</td></tr>
+                            <tr><th>Transcript completed last hour</th><td>\(snapshot.completedTranscriptLastHourCount)</td></tr>
+                            <tr><th>Transcript failed last hour</th><td>\(snapshot.failedTranscriptLastHourCount)</td></tr>
+                            <tr><th>Chapter completed last hour</th><td>\(snapshot.completedChapterLastHourCount)</td></tr>
+                            <tr><th>Chapter failed last hour</th><td>\(snapshot.failedChapterLastHourCount)</td></tr>
                         </tbody>
                     </table>
                 </section>
@@ -323,8 +341,10 @@ struct QueueMonitorSnapshot {
     let completedJobs: [QueueMonitorJobSummary]
     let failedJobs: [QueueMonitorJobSummary]
     let staleClaimedJobs: [QueueMonitorJobSummary]
-    let completedLastHourCount: Int
-    let failedLastHourCount: Int
+    let completedTranscriptLastHourCount: Int
+    let failedTranscriptLastHourCount: Int
+    let completedChapterLastHourCount: Int
+    let failedChapterLastHourCount: Int
 }
 
 struct QueueMonitorJobSummary {

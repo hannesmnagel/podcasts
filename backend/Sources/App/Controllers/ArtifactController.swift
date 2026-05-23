@@ -56,7 +56,10 @@ struct ArtifactController: RouteCollection {
                 on: req.db
             )
         }
-        let hasTranscriptForChapters = try await transcriptArtifactExists(episodeID: episodeID, on: req.db)
+        // Only schedule chapterization when we have a transcript that is ready
+        // for alignment quality (timed segments + fingerprints). This prevents
+        // chapter jobs from looping on placeholder/partial transcripts.
+        let hasTranscriptForChapters = try await transcriptReadyForAlignment(episodeID: episodeID, on: req.db)
         if wantsChapters,
            hasTranscriptForChapters,
            !(try await artifactExists(episodeID: episodeID, kind: "chapters", on: req.db)) {

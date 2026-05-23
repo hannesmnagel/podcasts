@@ -7,6 +7,7 @@ struct WorkerController: RouteCollection {
     private let baseRetryDelaySeconds = 60
     private let maxRetryDelaySeconds = 3600
     private let maxRetryAttempts = 8
+    private let failedTranscriptReseedCooldownSeconds = 21_600
 
     func boot(routes: any RoutesBuilder) throws {
         let workers = routes.grouped("worker")
@@ -267,7 +268,16 @@ struct WorkerController: RouteCollection {
             .filter(\.$episode.$id == episodeID)
             .filter(\.$kind == "transcript")
             .all()
-        return jobs.contains { $0.status == "pending" || $0.status == "claimed" }
+        if jobs.contains(where: { $0.status == "pending" || $0.status == "claimed" }) {
+            return true
+        }
+
+        let cooldownCutoff = Date().addingTimeInterval(-TimeInterval(failedTranscriptReseedCooldownSeconds))
+        return jobs.contains { job in
+            guard job.status == "failed" else { return false }
+            let failedAt = (job.updatedAt ?? job.createdAt) ?? .distantPast
+            return failedAt >= cooldownCutoff
+        }
     }
 
     private func findJob(_ req: Request) async throws -> WorkerJob {

@@ -10,6 +10,8 @@ struct WorkerController: RouteCollection {
     private let failedTranscriptReseedCooldownSeconds = 21_600
     private let pendingCandidateLimit = 400
     private let idBatchSize = 100
+    private let backlogEpisodeScanLimitPerPodcast = 150
+    private let backlogEpisodeGlobalScanLimit = 300
 
     func boot(routes: any RoutesBuilder) throws {
         let workers = routes.grouped("worker")
@@ -248,6 +250,7 @@ struct WorkerController: RouteCollection {
                     .filter(\.$podcast.$id == podcastID)
                     .sort(\.$publishedAt, .descending)
                     .sort(\.$createdAt, .descending)
+                    .limit(backlogEpisodeScanLimitPerPodcast)
                     .all()
                 for episode in demandedEpisodes {
                     let episodeID = try episode.requireID()
@@ -266,6 +269,7 @@ struct WorkerController: RouteCollection {
         let episodes = try await Episode.query(on: db)
             .sort(\.$publishedAt, .descending)
             .sort(\.$createdAt, .descending)
+            .limit(backlogEpisodeGlobalScanLimit)
             .all()
         for episode in episodes {
             let episodeID = try episode.requireID()

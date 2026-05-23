@@ -29,8 +29,10 @@ struct PodcastController: RouteCollection {
     }
 
     func index(req: Request) async throws -> [PodcastResponse] {
+        let limit = min(max(req.query[Int.self, at: "limit"] ?? 200, 1), 500)
         try await Podcast.query(on: req.db)
             .sort(\.$updatedAt, .descending)
+            .limit(limit)
             .all()
             .map(PodcastResponse.init)
     }

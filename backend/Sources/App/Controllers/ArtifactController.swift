@@ -11,6 +11,7 @@ struct ArtifactController: RouteCollection {
         "embedded-",
         "feed-"
     ]
+    private let idBatchSize = 200
 
     func boot(routes: any RoutesBuilder) throws {
         let episodes = routes.grouped("episodes", ":id")
@@ -82,17 +83,23 @@ struct ArtifactController: RouteCollection {
     }
 
     private func boostPendingJobs(for podcastID: UUID, by score: Int, on db: any Database) async throws {
-        let episodes = try await Episode.query(on: db).filter(\.$podcast.$id == podcastID).all()
-        let episodeIDs = try episodes.map { try $0.requireID() }
-        for episodeID in episodeIDs {
-            let jobs = try await WorkerJob.query(on: db)
-                .filter(\.$episode.$id == episodeID)
+        let episodeIDs = try await Episode.query(on: db)
+            .filter(\.$podcast.$id == podcastID)
+            .all()
+            .map { try $0.requireID() }
+        guard !episodeIDs.isEmpty else { return }
+
+        for batch in episodeIDs.chunked(into: idBatchSize) {
+            try await WorkerJob.query(on: db)
                 .filter(\.$status == "pending")
-                .all()
-            for job in jobs {
-                job.priority = max(job.priority, score)
-                try await job.save(on: db)
-            }
+                .filter(\.$priority < score)
+                .group(.or) { group in
+                    for episodeID in batch {
+                        group.filter(\.$episode.$id == episodeID)
+                    }
+                }
+                .set(\.$priority, to: score)
+                .update()
         }
     }
 
@@ -138,11 +145,15 @@ struct ArtifactController: RouteCollection {
 
     func chapters(req: Request) async throws -> ChapterArtifact {
         let episode = try await findEpisode(req)
-        let artifacts = try await ChapterArtifact.query(on: req.db)
+        var query = ChapterArtifact.query(on: req.db)
             .filter(\.$episode.$id == episode.requireID())
+                .group(.or) { group in
+                    for prefix in validChapterSourcePrefixes {
+                    group.filter(\.$source ~~ "\(prefix)%")
+                    }
+                }
             .sort(\.$createdAt, .descending)
-            .all()
-        guard let artifact = artifacts.first(where: isValidChapterArtifact) else {
+        guard let artifact = try await query.first() else {
             throw Abort(.notFound)
         }
         return artifact
@@ -236,18 +247,17 @@ struct ArtifactController: RouteCollection {
                 .filter(\.$episode.$id == episodeID)
                 .first() != nil
         case "chapters":
-            let artifacts = try await ChapterArtifact.query(on: db)
+            var query = ChapterArtifact.query(on: db)
                 .filter(\.$episode.$id == episodeID)
-                .all()
-            return artifacts.contains(where: isValidChapterArtifact)
+                .group(.or) { group in
+                    for prefix in validChapterSourcePrefixes {
+                        group.filter(\.$source ~~ "\(prefix)%")
+                    }
+                }
+            return try await query.first() != nil
         default:
             return false
         }
-    }
-
-    private func isValidChapterArtifact(_ artifact: ChapterArtifact) -> Bool {
-        let source = artifact.source.lowercased()
-        return validChapterSourcePrefixes.contains { source.hasPrefix($0) }
     }
 
     private func recencyPriority(for publishedAt: Date) -> Int {
@@ -309,4 +319,19 @@ struct TranscriptVersionResponse: Content {
     let model: String
     let hasSegmentFingerprints: Bool
     let createdAt: Date?
+}
+
+private extension Array {
+    func chunked(into size: Int) -> [[Element]] {
+        guard size > 0, !isEmpty else { return isEmpty ? [] : [self] }
+        var chunks: [[Element]] = []
+        chunks.reserveCapacity((count + size - 1) / size)
+        var index = 0
+        while index < count {
+            let end = Swift.min(index + size, count)
+            chunks.append(Array(self[index..<end]))
+            index = end
+        }
+        return chunks
+    }
 }

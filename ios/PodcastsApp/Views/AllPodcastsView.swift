@@ -30,7 +30,6 @@ final class AllPodcastsViewController: UITableViewController, UIDocumentPickerDe
         tableView.allowsMultipleSelection = true
         tableView.allowsMultipleSelectionDuringEditing = true
         navigationItem.leftBarButtonItem = UIBarButtonItem(image: UIImage(systemName: "gearshape"), style: .plain, target: self, action: #selector(showAppSettings))
-        navigationItem.rightBarButtonItem = editButtonItem
         updateSelectionToolbar()
         load()
         refreshPodcastMetadata()
@@ -154,7 +153,7 @@ final class AllPodcastsViewController: UITableViewController, UIDocumentPickerDe
             for podcastID in missingMetadataIDs {
                 await client.requestPodcastCrawl(podcastID)
             }
-            guard let podcasts = try? await client.podcasts() else { return }
+            guard let podcasts = try? await client.fetchAllPodcasts() else { return }
             LibraryStore.updateExistingSubscriptions(with: podcasts, in: modelContext)
             load()
         }
@@ -203,7 +202,14 @@ final class AllPodcastsViewController: UITableViewController, UIDocumentPickerDe
         let delete = UIBarButtonItem(image: UIImage(systemName: "trash"), style: .plain, target: self, action: #selector(deleteSelected))
         delete.tintColor = .systemRed
         delete.isEnabled = count > 0
-        toolbarItems = [share, UIBarButtonItem(systemItem: .flexibleSpace), label, UIBarButtonItem(systemItem: .flexibleSpace), delete]
+        var items: [UIBarButtonItem] = [share, UIBarButtonItem(systemItem: .flexibleSpace), label, UIBarButtonItem(systemItem: .flexibleSpace), delete]
+        if isEditing {
+            items.append(UIBarButtonItem(systemItem: .flexibleSpace))
+            items.append(UIBarButtonItem(systemItem: .done, primaryAction: UIAction { [weak self] _ in
+                self?.setEditing(false, animated: true)
+            }))
+        }
+        toolbarItems = items
     }
 
     @objc private func shareSelected() {
@@ -262,7 +268,7 @@ final class AllPodcastsViewController: UITableViewController, UIDocumentPickerDe
     private func presentSettingsController(_ controller: UIViewController) {
         controller.modalPresentationStyle = .pageSheet
         if let sheet = controller.sheetPresentationController {
-            sheet.detents = [.medium(), .large()]
+            sheet.detents = [.large()]
             sheet.prefersGrabberVisible = true
             sheet.preferredCornerRadius = 28
         }
@@ -297,6 +303,7 @@ final class AppSettingsViewController: UITableViewController {
         case lowDataModeDownloads
         case preloadNextEpisode
         case applyDownloadPolicies
+        case exportDiagnostics
         case chapterSkips
         case seekBack
         case seekForward
@@ -393,6 +400,10 @@ final class AppSettingsViewController: UITableViewController {
             configuration.text = "Apply Download Policies Now"
             configuration.secondaryText = "Download missing episodes for your current podcast policies."
             cell.accessoryType = .disclosureIndicator
+        case .exportDiagnostics:
+            configuration.text = "Export Diagnostics"
+            configuration.secondaryText = "Share app logs and crash diagnostics from this device."
+            cell.accessoryType = .disclosureIndicator
         case .chapterSkips:
             configuration.text = "Chapter Skip Rules"
             let count = ChapterSkipRuleStore.rules.count
@@ -428,6 +439,8 @@ final class AppSettingsViewController: UITableViewController {
             navigationController?.pushViewController(controller, animated: true)
         case .applyDownloadPolicies:
             Task { await applyDownloadPoliciesNow() }
+        case .exportDiagnostics:
+            Task { await exportDiagnostics() }
         case .backgroundDownloads, .cellularDownloads, .lowDataModeDownloads, .preloadNextEpisode:
             break
         case .chapterSkips:
@@ -512,6 +525,22 @@ final class AppSettingsViewController: UITableViewController {
         }
         statusText = downloaded == 1 ? "Downloaded 1 episode." : "Downloaded \(downloaded) episodes."
         tableView.reloadData()
+    }
+
+    @MainActor
+    private func exportDiagnostics() async {
+        statusText = "Preparing diagnostics export..."
+        tableView.reloadData()
+        do {
+            let exportURL = try await DiagnosticsCenter.shared.exportDiagnosticsBundle()
+            statusText = "Diagnostics ready."
+            tableView.reloadData()
+            let activity = UIActivityViewController(activityItems: [exportURL], applicationActivities: nil)
+            present(activity, animated: true)
+        } catch {
+            statusText = "Diagnostics export failed: \(error.localizedDescription)"
+            tableView.reloadData()
+        }
     }
 
     private static func subscriptions(in context: ModelContext) -> [PodcastSubscription] {

@@ -48,10 +48,12 @@ struct EpisodeController: RouteCollection {
     func episodesForPodcast(req: Request) async throws -> [EpisodeResponse] {
         let podcast = try await findPodcast(req)
         let limit = min(max(req.query[Int.self, at: "limit"] ?? 200, 1), 1000)
+        let offset = max(req.query[Int.self, at: "offset"] ?? 0, 0)
         return try await Episode.query(on: req.db)
             .with(\.$podcast)
             .filter(\.$podcast.$id == podcast.requireID())
             .sort(\.$publishedAt, .descending)
+            .offset(offset)
             .limit(limit)
             .all()
             .map(EpisodeResponse.init)

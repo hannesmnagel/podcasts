@@ -17,9 +17,10 @@ struct BackendClient: Sendable {
         }
     }
 
-    func podcasts(limit: Int = 500) async throws -> [PodcastDTO] {
+    func podcasts(limit: Int = 500, offset: Int = 0) async throws -> [PodcastDTO] {
         let clamped = min(max(limit, 1), 500)
-        return try await get("podcasts?limit=\(clamped)")
+        let clampedOffset = max(offset, 0)
+        return try await get("podcasts?limit=\(clamped)&offset=\(clampedOffset)")
     }
 
     func optimisticPodcast(feedURL: URL, title: String? = nil, imageURL: String? = nil) -> PodcastDTO {
@@ -74,9 +75,36 @@ struct BackendClient: Sendable {
         try await get("episodes?limit=\(limit)")
     }
 
-    func episodes(for podcastID: String, limit: Int = 1000) async throws -> [EpisodeDTO] {
+    func episodes(for podcastID: String, limit: Int = 1000, offset: Int = 0) async throws -> [EpisodeDTO] {
         let clamped = min(max(limit, 1), 1000)
-        return try await get("podcasts/\(podcastID)/episodes?limit=\(clamped)")
+        let clampedOffset = max(offset, 0)
+        return try await get("podcasts/\(podcastID)/episodes?limit=\(clamped)&offset=\(clampedOffset)")
+    }
+
+    func fetchAllPodcasts(pageSize: Int = 200) async throws -> [PodcastDTO] {
+        let page = min(max(pageSize, 1), 500)
+        var all: [PodcastDTO] = []
+        var offset = 0
+        while true {
+            let chunk = try await podcasts(limit: page, offset: offset)
+            all += chunk
+            if chunk.count < page { break }
+            offset += chunk.count
+        }
+        return all
+    }
+
+    func fetchAllEpisodes(for podcastID: String, pageSize: Int = 200) async throws -> [EpisodeDTO] {
+        let page = min(max(pageSize, 1), 1000)
+        var all: [EpisodeDTO] = []
+        var offset = 0
+        while true {
+            let chunk = try await episodes(for: podcastID, limit: page, offset: offset)
+            all += chunk
+            if chunk.count < page { break }
+            offset += chunk.count
+        }
+        return all
     }
 
     func search(_ query: String) async throws -> EpisodeSearchDTO {

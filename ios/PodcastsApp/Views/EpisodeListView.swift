@@ -21,9 +21,11 @@ class EpisodeListViewController: UITableViewController {
     private var deletedEpisodeIDs: Set< String> = []
     private var downloadedEpisodeIDs: Set<String> = []
     private var summarySnippets: [String: String] = [:]
+    private var artworkURLs: [String: URL] = [:]
     private let podcastHeaderView = PodcastDetailHeaderView()
     private var downloadProgressCancellable: AnyCancellable?
     private var navigationDownloadProgressCancellable: AnyCancellable?
+    private var playerStateCancellable: AnyCancellable?
     private var hasDownloadButtonInNavigation = false
     private var isLoading = false
     private var isWaitingForInitialCrawl = false
@@ -54,6 +56,7 @@ class EpisodeListViewController: UITableViewController {
         tableView.allowsMultipleSelectionDuringEditing = true
         configureNavigationItems()
         bindDownloadProgressNavigationItem()
+        bindPlayerState()
         configurePodcastHeaderIfNeeded()
         updateSelectionToolbar()
         refreshControl = UIRefreshControl()
@@ -91,13 +94,14 @@ class EpisodeListViewController: UITableViewController {
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let cell = tableView.dequeueReusableCell(withIdentifier: EpisodeCell.reuseIdentifier, for: indexPath) as! EpisodeCell
         let episode = visibleEpisodeSnapshot[indexPath.row]
+        let isCurrentPlaying = player.currentEpisode?.stableID == episode.stableID && player.isPlaying
         cell.configure(
             episode: episode,
             summaryText: summarySnippets[episode.stableID] ?? episode.summary,
-            artworkURL: LibraryStore.localArtworkURL(for: episode, in: modelContext),
+            artworkURL: artworkURLs[episode.stableID] ?? LibraryStore.localArtworkURL(for: episode, in: modelContext),
             isPlayed: playedEpisodeIDs.contains(episode.stableID),
             dimsPlayed: showsPlayedEpisodes,
-            player: player
+            isCurrentPlaying: isCurrentPlaying
         )
         cell.playTapped = { [weak self] in self?.play(episode) }
         return cell
@@ -172,14 +176,7 @@ class EpisodeListViewController: UITableViewController {
     }
 
     override func tableView(_ tableView: UITableView, leadingSwipeActionsConfigurationForRowAt indexPath: IndexPath) -> UISwipeActionsConfiguration? {
-        guard !tableView.isEditing else { return nil }
-        let episode = visibleEpisodeSnapshot[indexPath.row]
-        let play = UIContextualAction(style: .normal, title: "Play") { [weak self] _, _, done in
-            self?.play(episode)
-            done(true)
-        }
-        play.backgroundColor = .systemOrange
-        return UISwipeActionsConfiguration(actions: [play])
+        nil
     }
 
     override func tableView(_ tableView: UITableView, contextMenuConfigurationForRowAt indexPath: IndexPath, point: CGPoint) -> UIContextMenuConfiguration? {
@@ -227,7 +224,8 @@ class EpisodeListViewController: UITableViewController {
 
     func configureNavigationItems() {
         hasDownloadButtonInNavigation = hasVisibleDownloadProgress
-        var items: [UIBarButtonItem] = [editButtonItem]
+        navigationItem.leftBarButtonItems = additionalLeftBarButtonItems()
+        var items: [UIBarButtonItem] = []
         items.append(contentsOf: additionalRightBarButtonItems())
         if hasDownloadButtonInNavigation {
             items.append(UIBarButtonItem(image: UIImage(systemName: "arrow.down.circle.fill"), primaryAction: UIAction { [weak self] _ in
@@ -244,6 +242,7 @@ class EpisodeListViewController: UITableViewController {
     }
 
     func additionalRightBarButtonItems() -> [UIBarButtonItem] { [] }
+    func additionalLeftBarButtonItems() -> [UIBarButtonItem] { [] }
 
     private var hasVisibleDownloadProgress: Bool {
         DownloadProgressCenter.shared.progresses.values.contains { !$0.isFinished }
@@ -258,6 +257,25 @@ class EpisodeListViewController: UITableViewController {
                 guard shouldShowDownloadButton != self.hasDownloadButtonInNavigation else { return }
                 self.configureNavigationItems()
             }
+    }
+
+    private func bindPlayerState() {
+        playerStateCancellable = player.$currentEpisode
+            .combineLatest(player.$isPlaying)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _, _ in
+                self?.updateVisibleCellPlaybackIndicators()
+            }
+    }
+
+    private func updateVisibleCellPlaybackIndicators() {
+        for case let cell as EpisodeCell in tableView.visibleCells {
+            guard let indexPath = tableView.indexPath(for: cell),
+                  visibleEpisodeSnapshot.indices.contains(indexPath.row) else { continue }
+            let episodeID = visibleEpisodeSnapshot[indexPath.row].stableID
+            let isCurrentPlaying = player.currentEpisode?.stableID == episodeID && player.isPlaying
+            cell.setIsCurrentPlaying(isCurrentPlaying)
+        }
     }
 
     private func showDownloadsSheet() {
@@ -277,6 +295,10 @@ class EpisodeListViewController: UITableViewController {
         let hasHiddenEpisodes = !deletedEpisodeIDs.isEmpty
         let episodeActionAttributes: UIMenuElement.Attributes = hasEpisodes ? [] : .disabled
         return UIMenu(children: [
+            UIAction(title: "Share Apple Podcasts Link", image: UIImage(systemName: "square.and.arrow.up")) { [weak self] _ in
+                guard let self, let subscription = self.subscription else { return }
+                self.shareApplePodcastsLink(for: subscription)
+            },
             UIAction(title: "Mark All Played", image: UIImage(systemName: "checkmark.circle"), attributes: episodeActionAttributes) { [weak self] _ in
                 self?.markAllPlayed()
             },
@@ -304,12 +326,7 @@ class EpisodeListViewController: UITableViewController {
     private func configurePodcastHeaderIfNeeded() {
         guard case .podcast = mode else { return }
         podcastHeaderView.configure(subscription: subscription)
-        podcastHeaderView.settingsTapped = { [weak self] in self?.showPodcastDownloadSettings() }
-        podcastHeaderView.followTapped = { [weak self] in self?.confirmUnfollowPodcast() }
-        podcastHeaderView.shareTapped = { [weak self] in
-            guard let self, let subscription = self.subscription else { return }
-            self.shareApplePodcastsLink(for: subscription)
-        }
+        podcastHeaderView.contentSizeDidChange = { [weak self] in self?.updatePodcastHeaderSize() }
         tableView.tableHeaderView = podcastHeaderView
         updatePodcastHeaderSize()
     }
@@ -397,7 +414,7 @@ class EpisodeListViewController: UITableViewController {
         case .podcast(let podcastID):
             await client.requestPodcastCrawl(podcastID)
             do {
-                let fetched = try await client.episodes(for: podcastID)
+                let fetched = try await client.fetchAllEpisodes(for: podcastID)
                 await LibraryStore.cacheEpisodes(fetched, in: modelContext)
             } catch BackendError.notFound {
                 // Newly added optimistic subscriptions can be opened before the
@@ -421,7 +438,7 @@ class EpisodeListViewController: UITableViewController {
             for podcastID in podcastIDs {
                 group.addTask {
                     await self.client.requestPodcastCrawl(podcastID)
-                    return (podcastID, try await self.client.episodes(for: podcastID))
+                    return (podcastID, try await self.client.fetchAllEpisodes(for: podcastID))
                 }
             }
             var fetched: [EpisodeDTO] = []
@@ -435,7 +452,7 @@ class EpisodeListViewController: UITableViewController {
 
     private func refreshPodcastMetadataIfNeeded() async {
         guard case .podcast = mode else { return }
-        guard let podcasts = try? await client.podcasts() else { return }
+        guard let podcasts = try? await client.fetchAllPodcasts() else { return }
         LibraryStore.updateExistingSubscriptions(with: podcasts, in: modelContext)
         configurePodcastHeaderIfNeeded()
     }
@@ -459,6 +476,7 @@ class EpisodeListViewController: UITableViewController {
         deletedEpisodeIDs = sets.deleted
         downloadedEpisodeIDs = sets.downloaded
         summarySnippets = LibraryStore.summarySnippets(for: episodes, in: modelContext)
+        artworkURLs = LibraryStore.artworkURLs(for: episodes, in: modelContext)
     }
 
     private func refreshVisibleEpisodeSnapshot() {
@@ -469,7 +487,9 @@ class EpisodeListViewController: UITableViewController {
         if player.currentEpisode?.stableID == episode.stableID {
             player.togglePlayPause()
         } else {
-            FloatingDownloadHUD.shared.show(progressID: episode.stableID, title: episode.title)
+            if LibraryStore.downloadedEpisode(for: episode, in: self.modelContext) == nil {
+                FloatingDownloadHUD.shared.show(progressID: episode.stableID, title: episode.title)
+            }
             Task { [weak self] in
                 guard let self else { return }
                 guard let playableEpisode = await LibraryStore.playableDownloadedEpisode(for: episode, in: self.modelContext) else {
@@ -485,13 +505,7 @@ class EpisodeListViewController: UITableViewController {
     }
 
     private func showDownloadFailed(for episode: EpisodeDTO) {
-        let alert = UIAlertController(
-            title: "Download Failed",
-            message: "The episode audio could not be saved for playback. Try again on a stable connection.",
-            preferredStyle: .alert
-        )
-        alert.addAction(UIAlertAction(title: "OK", style: .default))
-        present(alert, animated: true)
+        FloatingDownloadHUD.shared.showFailure(progressID: episode.stableID, title: episode.title)
     }
 
     private func togglePlayed(_ episode: EpisodeDTO) {
@@ -572,7 +586,7 @@ class EpisodeListViewController: UITableViewController {
         removeDownload.accessibilityLabel = "Remove Download"
         removeDownload.tintColor = .systemRed
         removeDownload.isEnabled = count > 0
-        toolbarItems = [
+        var items: [UIBarButtonItem] = [
             play,
             UIBarButtonItem(systemItem: .flexibleSpace),
             played,
@@ -583,6 +597,13 @@ class EpisodeListViewController: UITableViewController {
             UIBarButtonItem(systemItem: .flexibleSpace),
             removeDownload
         ]
+        if isEditing {
+            items.append(UIBarButtonItem(systemItem: .flexibleSpace))
+            items.append(UIBarButtonItem(systemItem: .done, primaryAction: UIAction { [weak self] _ in
+                self?.setEditing(false, animated: true)
+            }))
+        }
+        toolbarItems = items
     }
 
     @objc private func playSelected() {
@@ -696,7 +717,7 @@ class EpisodeListViewController: UITableViewController {
         }
         controller.modalPresentationStyle = .pageSheet
         if let sheet = controller.sheetPresentationController {
-            sheet.detents = [.medium()]
+            sheet.detents = [.large()]
             sheet.prefersGrabberVisible = true
             sheet.preferredCornerRadius = 28
         }
@@ -780,17 +801,12 @@ class EpisodeListViewController: UITableViewController {
 }
 
 final class PodcastDetailHeaderView: UIView {
+    private let cardView = UIView()
     private let artworkView = ArtworkImageView(cornerRadius: 16)
     private let titleLabel = UILabel()
     private let feedLabel = UILabel()
-    private let descriptionLabel = UILabel()
-    private let followButton = UIButton(type: .system)
-    private let settingsButton = UIButton(type: .system)
-    private let shareButton = UIButton(type: .system)
-
-    var followTapped: (() -> Void)?
-    var settingsTapped: (() -> Void)?
-    var shareTapped: (() -> Void)?
+    private let descriptionContainer = UIView()
+    var contentSizeDidChange: (() -> Void)?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -803,79 +819,67 @@ final class PodcastDetailHeaderView: UIView {
 
     func configure(subscription: PodcastSubscription?) {
         titleLabel.text = subscription?.title.isEmpty == false ? subscription?.title : "Podcast"
-        feedLabel.text = subscription?.feedURL.absoluteString
-        let description = subscription?.podcastDescription
-            .map(ShowNotesProcessor.plainText)?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        descriptionLabel.text = description?.isEmpty == false ? description : "No podcast description saved yet."
+        feedLabel.text = subscription?.feedURL.host() ?? subscription?.feedURL.absoluteString
+        let description = subscription?.podcastDescription?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        descriptionContainer.subviews.forEach { $0.removeFromSuperview() }
+        let descriptionView: UIView = description.isEmpty
+            ? ShowNotesText.label(html: "No podcast description saved yet.", font: .preferredFont(forTextStyle: .body))
+            : ShowNotesText.collapsibleView(raw: description, textColor: .label, secondaryColor: .secondaryLabel) { [weak self] in
+                self?.contentSizeDidChange?()
+            }
+        descriptionView.translatesAutoresizingMaskIntoConstraints = false
+        descriptionContainer.addSubview(descriptionView)
+        NSLayoutConstraint.activate([
+            descriptionView.leadingAnchor.constraint(equalTo: descriptionContainer.leadingAnchor),
+            descriptionView.trailingAnchor.constraint(equalTo: descriptionContainer.trailingAnchor),
+            descriptionView.topAnchor.constraint(equalTo: descriptionContainer.topAnchor),
+            descriptionView.bottomAnchor.constraint(equalTo: descriptionContainer.bottomAnchor)
+        ])
         artworkView.load(url: subscription?.artworkURL)
     }
 
     private func configure() {
-        backgroundColor = .systemBackground
-        titleLabel.font = .preferredFont(forTextStyle: .title2)
+        backgroundColor = .clear
+        cardView.translatesAutoresizingMaskIntoConstraints = false
+        cardView.backgroundColor = .secondarySystemBackground
+        cardView.layer.cornerRadius = 22
+        cardView.clipsToBounds = true
+        addSubview(cardView)
+
+        titleLabel.font = .preferredFont(forTextStyle: .title3)
         titleLabel.numberOfLines = 2
         titleLabel.adjustsFontForContentSizeCategory = true
-        feedLabel.font = .preferredFont(forTextStyle: .footnote)
+        feedLabel.font = .preferredFont(forTextStyle: .subheadline)
         feedLabel.textColor = .secondaryLabel
         feedLabel.numberOfLines = 1
-        descriptionLabel.font = .preferredFont(forTextStyle: .body)
-        descriptionLabel.textColor = .secondaryLabel
-        descriptionLabel.numberOfLines = 0
-        descriptionLabel.adjustsFontForContentSizeCategory = true
-
-        configureHeaderButton(followButton, title: "Unfollow", image: "minus.circle", action: #selector(followAction))
-        configureHeaderButton(settingsButton, title: "Settings", image: "gearshape", action: #selector(settingsAction))
-        configureHeaderButton(shareButton, title: "Share", image: "square.and.arrow.up", action: #selector(shareAction))
-
         let labels = UIStackView(arrangedSubviews: [titleLabel, feedLabel])
         labels.axis = .vertical
-        labels.spacing = 4
+        labels.spacing = 3
         let topRow = UIStackView(arrangedSubviews: [artworkView, labels])
         topRow.axis = .horizontal
-        topRow.alignment = .center
-        topRow.spacing = 14
+        topRow.alignment = .top
+        topRow.spacing = 12
 
-        let buttons = UIStackView(arrangedSubviews: [settingsButton, shareButton, followButton])
-        buttons.axis = .horizontal
-        buttons.spacing = 10
-        buttons.distribution = .fillEqually
-
-        let stack = UIStackView(arrangedSubviews: [topRow, descriptionLabel, buttons])
+        let stack = UIStackView(arrangedSubviews: [topRow, descriptionContainer])
         stack.translatesAutoresizingMaskIntoConstraints = false
         stack.axis = .vertical
-        stack.spacing = 16
-        addSubview(stack)
+        stack.spacing = 14
+        cardView.addSubview(stack)
 
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 20),
-            stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -20),
-            stack.topAnchor.constraint(equalTo: topAnchor, constant: 18),
-            stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -18),
-            artworkView.widthAnchor.constraint(equalToConstant: 96),
-            artworkView.heightAnchor.constraint(equalToConstant: 96)
+            cardView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+            cardView.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
+            cardView.topAnchor.constraint(equalTo: topAnchor, constant: 10),
+            cardView.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -8),
+
+            stack.leadingAnchor.constraint(equalTo: cardView.leadingAnchor, constant: 14),
+            stack.trailingAnchor.constraint(equalTo: cardView.trailingAnchor, constant: -14),
+            stack.topAnchor.constraint(equalTo: cardView.topAnchor, constant: 14),
+            stack.bottomAnchor.constraint(equalTo: cardView.bottomAnchor, constant: -14),
+            artworkView.widthAnchor.constraint(equalToConstant: 88),
+            artworkView.heightAnchor.constraint(equalToConstant: 88)
         ])
-    }
-
-    private func configureHeaderButton(_ button: UIButton, title: String, image: String, action: Selector) {
-        var configuration = UIButton.Configuration.tinted()
-        configuration.title = title
-        configuration.image = UIImage(systemName: image)
-        configuration.imagePadding = 6
-        button.configuration = configuration
-        button.addTarget(self, action: action, for: .touchUpInside)
-    }
-
-    @objc private func followAction() {
-        followTapped?()
-    }
-
-    @objc private func settingsAction() {
-        settingsTapped?()
-    }
-
-    @objc private func shareAction() {
-        shareTapped?()
     }
 }
 
@@ -886,8 +890,9 @@ final class EpisodeCell: UITableViewCell {
     private let titleLabel = UILabel()
     private let metadataLabel = UILabel()
     private let summaryLabel = UILabel()
-    private let playButton = UIButton(type: .system)
-    private var cancellables: Set<AnyCancellable> = []
+    private let artworkOverlay = UIView()
+    private let artworkTapButton = UIButton(type: .system)
+    private let waveformView = WaveformBadgeView()
     private var episodeID: String?
     var playTapped: (() -> Void)?
 
@@ -902,30 +907,24 @@ final class EpisodeCell: UITableViewCell {
 
     override func prepareForReuse() {
         super.prepareForReuse()
-        cancellables.removeAll()
         artworkView.cancel()
         playTapped = nil
+        waveformView.stopAnimating()
     }
 
-    func configure(episode: EpisodeDTO, summaryText: String?, artworkURL: URL?, isPlayed: Bool, dimsPlayed: Bool, player: PlayerController) {
+    func configure(episode: EpisodeDTO, summaryText: String?, artworkURL: URL?, isPlayed: Bool, dimsPlayed: Bool, isCurrentPlaying: Bool) {
         episodeID = episode.stableID
         titleLabel.text = episode.title
         metadataLabel.text = episode.publishedAt?.formatted(date: .abbreviated, time: .omitted) ?? " "
         summaryLabel.text = summaryText?.isEmpty == false ? summaryText : " "
         artworkView.load(url: artworkURL)
         contentView.alpha = dimsPlayed && isPlayed ? 0.48 : 1
-        updatePlayButton(player: player)
-        player.$currentEpisode.combineLatest(player.$isPlaying)
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self, weak player] _, _ in
-                guard let player else { return }
-                self?.updatePlayButton(player: player)
-            }
-            .store(in: &cancellables)
+        setIsCurrentPlaying(isCurrentPlaying)
     }
 
     private func configure() {
         accessoryType = .disclosureIndicator
+        artworkView.isUserInteractionEnabled = true
         titleLabel.font = .preferredFont(forTextStyle: .headline)
         titleLabel.adjustsFontForContentSizeCategory = true
         titleLabel.numberOfLines = 2
@@ -935,13 +934,25 @@ final class EpisodeCell: UITableViewCell {
         summaryLabel.textColor = .secondaryLabel
         summaryLabel.numberOfLines = 1
 
-        playButton.tintColor = .systemOrange
-        playButton.addTarget(self, action: #selector(play), for: .touchUpInside)
+        artworkOverlay.translatesAutoresizingMaskIntoConstraints = false
+        artworkOverlay.backgroundColor = UIColor.black.withAlphaComponent(0.35)
+        artworkOverlay.layer.cornerRadius = 8
+        artworkOverlay.isHidden = true
+        artworkView.addSubview(artworkOverlay)
+
+        artworkTapButton.translatesAutoresizingMaskIntoConstraints = false
+        artworkTapButton.addTarget(self, action: #selector(play), for: .touchUpInside)
+        artworkTapButton.accessibilityLabel = "Play or Pause"
+        artworkView.addSubview(artworkTapButton)
+
+        waveformView.translatesAutoresizingMaskIntoConstraints = false
+        waveformView.isHidden = true
+        artworkView.addSubview(waveformView)
 
         let textStack = UIStackView(arrangedSubviews: [titleLabel, metadataLabel, summaryLabel])
         textStack.axis = .vertical
         textStack.spacing = 4
-        let row = UIStackView(arrangedSubviews: [artworkView, textStack, playButton])
+        let row = UIStackView(arrangedSubviews: [artworkView, textStack])
         row.translatesAutoresizingMaskIntoConstraints = false
         row.alignment = .center
         row.spacing = 12
@@ -954,19 +965,84 @@ final class EpisodeCell: UITableViewCell {
             row.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -12),
             artworkView.widthAnchor.constraint(equalToConstant: 72),
             artworkView.heightAnchor.constraint(equalToConstant: 72),
-            playButton.widthAnchor.constraint(equalToConstant: 44),
-            playButton.heightAnchor.constraint(equalToConstant: 44)
+            artworkOverlay.leadingAnchor.constraint(equalTo: artworkView.leadingAnchor),
+            artworkOverlay.trailingAnchor.constraint(equalTo: artworkView.trailingAnchor),
+            artworkOverlay.topAnchor.constraint(equalTo: artworkView.topAnchor),
+            artworkOverlay.bottomAnchor.constraint(equalTo: artworkView.bottomAnchor),
+            artworkTapButton.leadingAnchor.constraint(equalTo: artworkView.leadingAnchor),
+            artworkTapButton.trailingAnchor.constraint(equalTo: artworkView.trailingAnchor),
+            artworkTapButton.topAnchor.constraint(equalTo: artworkView.topAnchor),
+            artworkTapButton.bottomAnchor.constraint(equalTo: artworkView.bottomAnchor),
+            waveformView.centerXAnchor.constraint(equalTo: artworkView.centerXAnchor),
+            waveformView.centerYAnchor.constraint(equalTo: artworkView.centerYAnchor),
+            waveformView.widthAnchor.constraint(equalToConstant: 38),
+            waveformView.heightAnchor.constraint(equalToConstant: 20)
         ])
     }
 
-    private func updatePlayButton(player: PlayerController) {
-        let isCurrentPlaying = player.currentEpisode?.stableID == episodeID && player.isPlaying
-        playButton.setImage(UIImage(systemName: isCurrentPlaying ? "pause.circle.fill" : "play.circle.fill"), for: .normal)
-        playButton.accessibilityLabel = isCurrentPlaying ? "Pause" : "Play"
+    func setIsCurrentPlaying(_ isCurrentPlaying: Bool) {
+        artworkOverlay.isHidden = !isCurrentPlaying
+        waveformView.isHidden = !isCurrentPlaying
+        if isCurrentPlaying {
+            waveformView.startAnimating()
+        } else {
+            waveformView.stopAnimating()
+        }
     }
 
     @objc private func play() {
         playTapped?()
+    }
+}
+
+final class WaveformBadgeView: UIView {
+    private let bars: [UIView] = (0..<5).map { _ in UIView() }
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        isUserInteractionEnabled = false
+        bars.forEach { bar in
+            bar.translatesAutoresizingMaskIntoConstraints = false
+            bar.backgroundColor = .white
+            bar.layer.cornerRadius = 1.5
+            addSubview(bar)
+        }
+
+        let stack = UIStackView(arrangedSubviews: bars)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        stack.axis = .horizontal
+        stack.alignment = .center
+        stack.distribution = .fillEqually
+        stack.spacing = 3
+        addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor),
+            stack.topAnchor.constraint(equalTo: topAnchor),
+            stack.bottomAnchor.constraint(equalTo: bottomAnchor)
+        ])
+        bars.forEach { $0.heightAnchor.constraint(equalToConstant: 6).isActive = true }
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    func startAnimating() {
+        for (idx, bar) in bars.enumerated() where bar.layer.animation(forKey: "wave") == nil {
+            let animation = CABasicAnimation(keyPath: "transform.scale.y")
+            animation.fromValue = 0.35
+            animation.toValue = 1
+            animation.duration = 0.45
+            animation.autoreverses = true
+            animation.repeatCount = .infinity
+            animation.beginTime = CACurrentMediaTime() + (Double(idx) * 0.08)
+            bar.layer.add(animation, forKey: "wave")
+        }
+    }
+
+    func stopAnimating() {
+        bars.forEach { $0.layer.removeAnimation(forKey: "wave") }
     }
 }
 
@@ -1155,9 +1231,30 @@ final class ArtworkImageView: UIImageView {
 
 extension UIViewController {
     func showError(_ error: Error) {
+        if isConnectivityError(error) { return }
         let alert = UIAlertController(title: "Error", message: error.localizedDescription, preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "OK", style: .default))
         present(alert, animated: true)
+    }
+
+    private func isConnectivityError(_ error: Error) -> Bool {
+        if let backendError = error as? BackendError {
+            if case .offline = backendError {
+                return true
+            }
+        }
+        if let urlError = error as? URLError {
+            switch urlError.code {
+            case .notConnectedToInternet, .networkConnectionLost, .cannotConnectToHost, .timedOut:
+                return true
+            default:
+                break
+            }
+        }
+        let message = error.localizedDescription.lowercased()
+        return message.contains("no internet connection")
+            || message.contains("network connection was lost")
+            || message.contains("connection lost")
     }
 
     func share(_ url: URL?) {

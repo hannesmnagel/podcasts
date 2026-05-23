@@ -8,6 +8,8 @@ struct WorkerController: RouteCollection {
     private let maxRetryDelaySeconds = 3600
     private let maxRetryAttempts = 8
     private let failedTranscriptReseedCooldownSeconds = 21_600
+    private let pendingCandidateLimit = 400
+    private let idBatchSize = 100
 
     func boot(routes: any RoutesBuilder) throws {
         let workers = routes.grouped("worker")
@@ -137,6 +139,9 @@ struct WorkerController: RouteCollection {
                 group.filter(\.$nextAttemptAt <= now)
             }
             .with(\.$episode)
+            .sort(\.$priority, .descending)
+            .sort(\.$createdAt, .ascending)
+            .limit(pendingCandidateLimit)
         if let kinds, !kinds.isEmpty {
             query = query.group(.or) { group in
                 for kind in kinds {
@@ -145,17 +150,13 @@ struct WorkerController: RouteCollection {
             }
         }
         let pending = try await query.all()
+        guard !pending.isEmpty else { return nil }
+
         let episodeIDs = Set(pending.map(\.$episode.id))
-        let artifactRequests = try await ArtifactRequest.query(on: db)
-            .all()
-            .filter { episodeIDs.contains($0.$episode.id) }
-        let requestsByEpisodeID = Dictionary(uniqueKeysWithValues: artifactRequests.map { ($0.$episode.id, $0.transcriptCount) })
+        let requestsByEpisodeID = try await transcriptRequestsByEpisodeID(Array(episodeIDs), on: db)
 
         let podcastIDs = Set(pending.map { $0.episode.$podcast.id })
-        let podcastDemands = try await PodcastDemand.query(on: db)
-            .all()
-            .filter { podcastIDs.contains($0.$podcast.id) }
-        let demandByPodcastID = Dictionary(uniqueKeysWithValues: podcastDemands.map { ($0.$podcast.id, $0.priorityScore) })
+        let demandByPodcastID = try await podcastDemandScoreByPodcastID(Array(podcastIDs), on: db)
 
         return pending.max { lhs, rhs in
             jobSortKey(
@@ -168,6 +169,42 @@ struct WorkerController: RouteCollection {
                 podcastDemandScore: demandByPodcastID[rhs.episode.$podcast.id] ?? 0
             )
         }
+    }
+
+    private func transcriptRequestsByEpisodeID(_ episodeIDs: [UUID], on db: any Database) async throws -> [UUID: Int] {
+        guard !episodeIDs.isEmpty else { return [:] }
+        var result: [UUID: Int] = [:]
+        for batch in episodeIDs.chunked(into: idBatchSize) {
+            let rows = try await ArtifactRequest.query(on: db)
+                .group(.or) { group in
+                    for id in batch {
+                        group.filter(\.$episode.$id == id)
+                    }
+                }
+                .all()
+            for row in rows {
+                result[row.$episode.id] = row.transcriptCount
+            }
+        }
+        return result
+    }
+
+    private func podcastDemandScoreByPodcastID(_ podcastIDs: [UUID], on db: any Database) async throws -> [UUID: Int] {
+        guard !podcastIDs.isEmpty else { return [:] }
+        var result: [UUID: Int] = [:]
+        for batch in podcastIDs.chunked(into: idBatchSize) {
+            let rows = try await PodcastDemand.query(on: db)
+                .group(.or) { group in
+                    for id in batch {
+                        group.filter(\.$podcast.$id == id)
+                    }
+                }
+                .all()
+            for row in rows {
+                result[row.$podcast.id] = row.priorityScore
+            }
+        }
+        return result
     }
 
     private func jobSortKey(_ job: WorkerJob, transcriptRequests: Int, podcastDemandScore: Int) -> JobSortKey {
@@ -329,5 +366,20 @@ struct ClaimedWorkerJobResponse: Content {
         self.kind = job.kind
         self.priority = job.priority
         self.episode = job.episode
+    }
+}
+
+private extension Array {
+    func chunked(into size: Int) -> [[Element]] {
+        guard size > 0, !isEmpty else { return isEmpty ? [] : [self] }
+        var chunks: [[Element]] = []
+        chunks.reserveCapacity((count + size - 1) / size)
+        var index = 0
+        while index < count {
+            let end = Swift.min(index + size, count)
+            chunks.append(Array(self[index..<end]))
+            index = end
+        }
+        return chunks
     }
 }

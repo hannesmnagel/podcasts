@@ -145,13 +145,14 @@ struct ArtifactController: RouteCollection {
 
     func chapters(req: Request) async throws -> ChapterArtifact {
         let episode = try await findEpisode(req)
-        var query = ChapterArtifact.query(on: req.db)
-            .filter(\.$episode.$id == episode.requireID())
-                .group(.or) { group in
-                    for prefix in validChapterSourcePrefixes {
+        let episodeID = try episode.requireID()
+        let query = ChapterArtifact.query(on: req.db)
+            .filter(\.$episode.$id == episodeID)
+            .group(.or) { group in
+                for prefix in validChapterSourcePrefixes {
                     group.filter(\.$source ~~ "\(prefix)%")
-                    }
                 }
+            }
             .sort(\.$createdAt, .descending)
         guard let artifact = try await query.first() else {
             throw Abort(.notFound)

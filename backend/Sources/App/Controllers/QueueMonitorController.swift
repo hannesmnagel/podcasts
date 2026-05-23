@@ -21,59 +21,78 @@ struct QueueMonitorController: RouteCollection {
         let cutoff = now.addingTimeInterval(TimeInterval(-timeoutSeconds))
         let oneHourCutoff = now.addingTimeInterval(-3600)
 
-        let jobs = try await WorkerJob.query(on: db)
+        let totalJobsCount = try await WorkerJob.query(on: db).count()
+        let pendingJobsCount = try await WorkerJob.query(on: db)
+            .filter(\.$status == "pending")
+            .count()
+        let claimedJobsCount = try await WorkerJob.query(on: db)
+            .filter(\.$status == "claimed")
+            .count()
+        let completedJobsCount = try await WorkerJob.query(on: db)
+            .filter(\.$status == "completed")
+            .count()
+        let failedJobsCount = try await WorkerJob.query(on: db)
+            .filter(\.$status == "failed")
+            .count()
+        let staleClaimedJobsCount = try await WorkerJob.query(on: db)
+            .filter(\.$status == "claimed")
+            .filter(\.$claimedAt < cutoff)
+            .count()
+
+        let pendingJobs = try await WorkerJob.query(on: db)
+            .filter(\.$status == "pending")
             .with(\.$episode) { episode in
                 episode.with(\.$podcast)
             }
-            .sort(\.$status, .ascending)
             .sort(\.$priority, .descending)
             .sort(\.$createdAt, .ascending)
+            .limit(5)
             .all()
+            .map { try QueueMonitorJobSummary(job: $0) }
 
-        let transcriptEpisodeIDs = Set(try await TranscriptArtifact.query(on: db)
+        let claimedJobs = try await WorkerJob.query(on: db)
+            .filter(\.$status == "claimed")
+            .with(\.$episode) { episode in
+                episode.with(\.$podcast)
+            }
+            .sort(\.$claimedAt, .descending)
+            .limit(30)
             .all()
-            .map { $0.$episode.id })
+            .map { try QueueMonitorJobSummary(job: $0) }
 
-        let summaries = try jobs.map { job in
-            try QueueMonitorJobSummary(job: job, hasTranscript: transcriptEpisodeIDs.contains(job.$episode.id))
-        }.filter { summary in
-            summary.kind != "chapters" || summary.hasTranscript
-        }
-
-        let pendingJobs = summaries.filter { $0.status == "pending" }
-        let claimedJobs = summaries.filter { $0.status == "claimed" }
-        let staleClaimedJobs = claimedJobs.filter { $0.claimedAt.map { $0 < cutoff } ?? false }
-        let completedTranscriptLastHourCount = jobs.filter {
-            $0.kind == "transcript" &&
-            $0.status == "completed" &&
-            (($0.completedAt ?? $0.updatedAt) ?? .distantPast) >= oneHourCutoff
-        }.count
-        let failedTranscriptLastHourCount = jobs.filter {
-            $0.kind == "transcript" &&
-            $0.status == "failed" &&
-            ($0.updatedAt ?? .distantPast) >= oneHourCutoff
-        }.count
-        let completedChapterLastHourCount = jobs.filter {
-            $0.kind == "chapters" &&
-            $0.status == "completed" &&
-            (($0.completedAt ?? $0.updatedAt) ?? .distantPast) >= oneHourCutoff
-        }.count
-        let failedChapterLastHourCount = jobs.filter {
-            $0.kind == "chapters" &&
-            $0.status == "failed" &&
-            ($0.updatedAt ?? .distantPast) >= oneHourCutoff
-        }.count
+        let completedTranscriptLastHourCount = try await WorkerJob.query(on: db)
+            .filter(\.$kind == "transcript")
+            .filter(\.$status == "completed")
+            .filter(\.$completedAt >= oneHourCutoff)
+            .count()
+        let failedTranscriptLastHourCount = try await WorkerJob.query(on: db)
+            .filter(\.$kind == "transcript")
+            .filter(\.$status == "failed")
+            .filter(\.$updatedAt >= oneHourCutoff)
+            .count()
+        let completedChapterLastHourCount = try await WorkerJob.query(on: db)
+            .filter(\.$kind == "chapters")
+            .filter(\.$status == "completed")
+            .filter(\.$completedAt >= oneHourCutoff)
+            .count()
+        let failedChapterLastHourCount = try await WorkerJob.query(on: db)
+            .filter(\.$kind == "chapters")
+            .filter(\.$status == "failed")
+            .filter(\.$updatedAt >= oneHourCutoff)
+            .count()
 
         return QueueMonitorSnapshot(
             generatedAt: now,
             watchdogTimeoutSeconds: timeoutSeconds,
             cutoff: cutoff,
-            totalJobs: jobs.count,
+            totalJobsCount: totalJobsCount,
+            pendingJobsCount: pendingJobsCount,
+            claimedJobsCount: claimedJobsCount,
             pendingJobs: pendingJobs,
             claimedJobs: claimedJobs,
-            completedJobs: summaries.filter { $0.status == "completed" },
-            failedJobs: summaries.filter { $0.status == "failed" },
-            staleClaimedJobs: staleClaimedJobs,
+            completedJobsCount: completedJobsCount,
+            failedJobsCount: failedJobsCount,
+            staleClaimedJobsCount: staleClaimedJobsCount,
             completedTranscriptLastHourCount: completedTranscriptLastHourCount,
             failedTranscriptLastHourCount: failedTranscriptLastHourCount,
             completedChapterLastHourCount: completedChapterLastHourCount,
@@ -82,9 +101,9 @@ struct QueueMonitorController: RouteCollection {
     }
 
     static func renderHTML(snapshot: QueueMonitorSnapshot) -> String {
-        let pendingRows = renderRows(jobs: Array(snapshot.pendingJobs.prefix(5)), emptyMessage: "No pending jobs.")
+        let pendingRows = renderRows(jobs: snapshot.pendingJobs, emptyMessage: "No pending jobs.")
         let claimedRows = renderRows(jobs: snapshot.claimedJobs, emptyMessage: "No claimed jobs.")
-        let staleBadge = snapshot.staleClaimedJobs.isEmpty ? "Healthy" : "\(snapshot.staleClaimedJobs.count) stale"
+        let staleBadge = snapshot.staleClaimedJobsCount == 0 ? "Healthy" : "\(snapshot.staleClaimedJobsCount) stale"
         return """
         <!doctype html>
         <html lang="en">
@@ -217,13 +236,13 @@ struct QueueMonitorController: RouteCollection {
                 </section>
 
                 <section class="summary">
-                    \(metricCard(label: "Total jobs", value: snapshot.totalJobs, hint: "All worker jobs in the backend"))
-                    \(metricCard(label: "Pending", value: snapshot.pendingJobs.count, hint: "Ready to be claimed"))
-                    \(metricCard(label: "Claimed", value: snapshot.claimedJobs.count, hint: "Currently owned by a worker"))
-                    \(metricCard(label: "Completed", value: snapshot.completedJobs.count, hint: "Finished jobs"))
+                    \(metricCard(label: "Total jobs", value: snapshot.totalJobsCount, hint: "All worker jobs in the backend"))
+                    \(metricCard(label: "Pending", value: snapshot.pendingJobsCount, hint: "Ready to be claimed"))
+                    \(metricCard(label: "Claimed", value: snapshot.claimedJobsCount, hint: "Currently owned by a worker"))
+                    \(metricCard(label: "Completed", value: snapshot.completedJobsCount, hint: "Finished jobs"))
                     \(metricCard(label: "Transcript Done 1h", value: snapshot.completedTranscriptLastHourCount, hint: "Transcript jobs completed in the last hour"))
                     \(metricCard(label: "Transcript Fail 1h", value: snapshot.failedTranscriptLastHourCount, hint: "Transcript jobs failed in the last hour"))
-                    \(metricCard(label: "Watchdog", value: snapshot.staleClaimedJobs.count, hint: "Claimed longer than \(snapshot.watchdogTimeoutSeconds)s"))
+                    \(metricCard(label: "Watchdog", value: snapshot.staleClaimedJobsCount, hint: "Claimed longer than \(snapshot.watchdogTimeoutSeconds)s"))
                 </section>
 
                 <section class="panel">
@@ -237,8 +256,8 @@ struct QueueMonitorController: RouteCollection {
                     <table>
                         <tbody>
                             <tr><th>Stale claim timeout</th><td>\(snapshot.watchdogTimeoutSeconds) seconds</td></tr>
-                            <tr><th>Stale claimed jobs</th><td>\(snapshot.staleClaimedJobs.count)</td></tr>
-                            <tr><th>Failed jobs</th><td>\(snapshot.failedJobs.count)</td></tr>
+                            <tr><th>Stale claimed jobs</th><td>\(snapshot.staleClaimedJobsCount)</td></tr>
+                            <tr><th>Failed jobs</th><td>\(snapshot.failedJobsCount)</td></tr>
                             <tr><th>Transcript completed last hour</th><td>\(snapshot.completedTranscriptLastHourCount)</td></tr>
                             <tr><th>Transcript failed last hour</th><td>\(snapshot.failedTranscriptLastHourCount)</td></tr>
                             <tr><th>Chapter completed last hour</th><td>\(snapshot.completedChapterLastHourCount)</td></tr>
@@ -335,12 +354,14 @@ struct QueueMonitorSnapshot {
     let generatedAt: Date
     let watchdogTimeoutSeconds: Int
     let cutoff: Date
-    let totalJobs: Int
+    let totalJobsCount: Int
+    let pendingJobsCount: Int
+    let claimedJobsCount: Int
     let pendingJobs: [QueueMonitorJobSummary]
     let claimedJobs: [QueueMonitorJobSummary]
-    let completedJobs: [QueueMonitorJobSummary]
-    let failedJobs: [QueueMonitorJobSummary]
-    let staleClaimedJobs: [QueueMonitorJobSummary]
+    let completedJobsCount: Int
+    let failedJobsCount: Int
+    let staleClaimedJobsCount: Int
     let completedTranscriptLastHourCount: Int
     let failedTranscriptLastHourCount: Int
     let completedChapterLastHourCount: Int
@@ -352,18 +373,16 @@ struct QueueMonitorJobSummary {
     let kind: String
     let status: String
     let priority: Int
-    let hasTranscript: Bool
     let claimedBy: String?
     let claimedAt: Date?
     let podcastTitle: String
     let episodeTitle: String
 
-    init(job: WorkerJob, hasTranscript: Bool) throws {
+    init(job: WorkerJob) throws {
         self.id = try job.requireID()
         self.kind = job.kind
         self.status = job.status
         self.priority = job.priority
-        self.hasTranscript = hasTranscript
         self.claimedBy = job.claimedBy
         self.claimedAt = job.claimedAt
         self.podcastTitle = job.episode.$podcast.value?.title ?? "Unknown podcast"

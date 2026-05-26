@@ -159,7 +159,8 @@ final class SearchViewController: UITableViewController, UISearchResultsUpdating
         case 1:
             let episode = visibleEpisodeSnapshot[indexPath.row]
             let cell = tableView.dequeueReusableCell(withIdentifier: EpisodeCell.reuseIdentifier, for: indexPath) as! EpisodeCell
-            cell.configure(episode: episode, summaryText: summarySnippets[episode.stableID] ?? episode.summary, artworkURL: LibraryStore.localArtworkURL(for: episode, in: modelContext), isPlayed: playedEpisodeIDs.contains(episode.stableID), dimsPlayed: false, player: player)
+            let isCurrentPlaying = player.currentEpisode?.stableID == episode.stableID && player.isPlaying
+            cell.configure(episode: episode, summaryText: summarySnippets[episode.stableID] ?? episode.summary, artworkURL: LibraryStore.localArtworkURL(for: episode, in: modelContext), isPlayed: playedEpisodeIDs.contains(episode.stableID), dimsPlayed: false, isCurrentPlaying: isCurrentPlaying)
             cell.playTapped = { [weak self] in self?.play(episode) }
             return cell
         default:
@@ -379,7 +380,9 @@ final class SearchViewController: UITableViewController, UISearchResultsUpdating
         if player.currentEpisode?.stableID == episode.stableID {
             player.togglePlayPause()
         } else {
-            FloatingDownloadHUD.shared.show(progressID: episode.stableID, title: episode.title)
+            if LibraryStore.downloadedEpisode(for: episode, in: self.modelContext) == nil {
+                FloatingDownloadHUD.shared.show(progressID: episode.stableID, title: episode.title)
+            }
             Task { [weak self] in
                 guard let self else { return }
                 guard let playableEpisode = await LibraryStore.playableDownloadedEpisode(for: episode, in: self.modelContext) else {
@@ -392,13 +395,7 @@ final class SearchViewController: UITableViewController, UISearchResultsUpdating
     }
 
     private func showDownloadFailed(for episode: EpisodeDTO) {
-        let alert = UIAlertController(
-            title: "Download Failed",
-            message: "The episode audio could not be saved for playback. Try again on a stable connection.",
-            preferredStyle: .alert
-        )
-        alert.addAction(UIAlertAction(title: "OK", style: .default))
-        present(alert, animated: true)
+        FloatingDownloadHUD.shared.showFailure(progressID: episode.stableID, title: episode.title)
     }
 
     private func rssFeedURL(from value: String) -> URL? {

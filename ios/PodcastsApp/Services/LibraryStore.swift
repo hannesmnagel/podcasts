@@ -169,7 +169,9 @@ enum LibraryStore {
         guard let remoteURL = URL(string: episode.audioURL) else { return false }
         let state = episodeState(for: episode, in: context) ?? makeEpisodeState(for: episode, in: context)
         let progressID = progressID ?? episode.stableID
-        DownloadProgressCenter.shared.begin(id: progressID, title: episode.title)
+        await MainActor.run {
+            DownloadProgressCenter.shared.begin(id: progressID, title: episode.title)
+        }
         if remoteURL.isFileURL, FileManager.default.fileExists(atPath: remoteURL.path) {
             state.downloadedFileURL = remoteURL
             state.isDownloaded = true
@@ -181,7 +183,9 @@ enum LibraryStore {
             state.downloadedFileURL = cachedURL
             state.isDownloaded = true
             try? context.save()
-            DownloadProgressCenter.shared.finish(id: progressID)
+            await MainActor.run {
+                DownloadProgressCenter.shared.finish(id: progressID)
+            }
             return true
         }
 
@@ -192,7 +196,9 @@ enum LibraryStore {
             try? context.save()
             return true
         } catch {
-            DownloadProgressCenter.shared.fail(id: progressID)
+            await MainActor.run {
+                DownloadProgressCenter.shared.fail(id: progressID)
+            }
             #if DEBUG
             print("[PodcastsDebug][Download] failed id=\(episode.stableID) url=\(episode.audioURL) error=\(error)")
             #endif
@@ -245,9 +251,9 @@ enum LibraryStore {
         episodes.forEach { removeDownload(for: $0, in: context) }
     }
 
-    static func downloadPolicyTargets(for episodes: [EpisodeDTO], subscription: PodcastSubscription?, in context: ModelContext) -> [EpisodeDTO] {
+    static func downloadPolicyTargets(for episodes: [EpisodeDTO], policy: EpisodeDownloadPolicy, in context: ModelContext) -> [EpisodeDTO] {
         let visible = visibleEpisodes(episodes, in: context)
-        switch DownloadSettings.policy(for: subscription) {
+        switch policy {
         case .manual:
             return []
         case .latest:
@@ -259,6 +265,25 @@ enum LibraryStore {
         }
     }
 
+    @MainActor
+    static func downloadPolicyTargets(for episodes: [EpisodeDTO], subscription: PodcastSubscription?, in context: ModelContext) -> [EpisodeDTO] {
+        downloadPolicyTargets(for: episodes, policy: DownloadSettings.policy(for: subscription), in: context)
+    }
+
+    static func applyDownloadPolicy(to episodes: [EpisodeDTO], policy: EpisodeDownloadPolicy, in context: ModelContext) async -> Int {
+        let targets = downloadPolicyTargets(for: episodes, policy: policy, in: context)
+        let downloadedIDs = downloadedEpisodeIDs(for: targets, in: context)
+        var completed = 0
+        for episode in targets where !downloadedIDs.contains(episode.stableID) {
+            if await downloadAudio(for: episode, in: context, progressID: "policy-\(episode.stableID)") {
+                completed += 1
+            }
+            await Task.yield()
+        }
+        return completed
+    }
+
+    @MainActor
     static func applyDownloadPolicy(to episodes: [EpisodeDTO], subscription: PodcastSubscription?, in context: ModelContext) async -> Int {
         let targets = downloadPolicyTargets(for: episodes, subscription: subscription, in: context)
         let downloadedIDs = downloadedEpisodeIDs(for: targets, in: context)
@@ -441,6 +466,45 @@ enum LibraryStore {
             return cached
         }
         return episode.imageURL.flatMap(URL.init) ?? showArtworkURL(for: episode, in: context)
+    }
+
+    static func artworkURLs(for episodes: [EpisodeDTO], in context: ModelContext) -> [String: URL] {
+        guard !episodes.isEmpty else { return [:] }
+        let episodeIDs = Set(episodes.map(\.stableID))
+        let podcastIDs = Set(episodes.compactMap(\.podcastStableID))
+
+        let stateDescriptor = FetchDescriptor<LocalEpisodeState>()
+        let states = (try? context.fetch(stateDescriptor)) ?? []
+        var cachedImageURLs: [String: URL] = [:]
+        for state in states where episodeIDs.contains(state.episodeStableID) {
+            if let cached = state.cachedImageFileURL {
+                cachedImageURLs[state.episodeStableID] = cached
+            }
+        }
+
+        var podcastArtworkByID: [String: URL] = [:]
+        if !podcastIDs.isEmpty {
+            let subscriptionDescriptor = FetchDescriptor<PodcastSubscription>()
+            let subscriptions = (try? context.fetch(subscriptionDescriptor)) ?? []
+            for subscription in subscriptions where podcastIDs.contains(subscription.stableID) {
+                guard let artworkURL = subscription.artworkURL else { continue }
+                let cachedArtworkURL = LocalMediaCache.cachedFileURL(for: artworkURL)
+                podcastArtworkByID[subscription.stableID] = FileManager.default.fileExists(atPath: cachedArtworkURL.path) ? cachedArtworkURL : artworkURL
+            }
+        }
+
+        var urls: [String: URL] = [:]
+        urls.reserveCapacity(episodes.count)
+        for episode in episodes {
+            if let cached = cachedImageURLs[episode.stableID] {
+                urls[episode.stableID] = cached
+            } else if let imageURL = episode.imageURL.flatMap(URL.init) {
+                urls[episode.stableID] = imageURL
+            } else if let podcastID = episode.podcastStableID, let fallbackArtwork = podcastArtworkByID[podcastID] {
+                urls[episode.stableID] = fallbackArtwork
+            }
+        }
+        return urls
     }
 
     static func cachedChapterImageURL(for chapter: EpisodeChapterDTO, episode: EpisodeDTO, in context: ModelContext) -> URL? {
@@ -679,7 +743,7 @@ enum LibraryStore {
     }
 }
 
-private extension LocalEpisodeState {
+extension LocalEpisodeState {
     func episodeDTO(preferDownloadedFile: Bool) -> EpisodeDTO {
         let localAudioURL: URL?
         if preferDownloadedFile,

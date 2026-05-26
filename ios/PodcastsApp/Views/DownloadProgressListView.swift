@@ -41,6 +41,24 @@ final class FloatingDownloadHUD {
         }
     }
 
+    func showFailure(progressID: String, title: String?) {
+        currentProgressID = progressID
+        installIfNeeded()
+        titleLabel?.text = title?.isEmpty == false ? title : "Episode download"
+        detailLabel?.text = "Download failed"
+        progressView?.setProgress(0, animated: false)
+        container?.alpha = 0
+        UIView.animate(withDuration: 0.18) {
+            self.container?.alpha = 1
+        }
+        cancellable = nil
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(2.2))
+            guard self.currentProgressID == progressID else { return }
+            self.hide()
+        }
+    }
+
     private func installIfNeeded() {
         guard container == nil, let window = Self.keyWindow else { return }
 

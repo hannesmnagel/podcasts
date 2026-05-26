@@ -41,6 +41,7 @@ final class PlayerController: ObservableObject {
     private var isAutoSkipping = false
     private var didInstallRemoteCommandHandlers = false
     private var shouldResumeAfterAudioInterruption = false
+    private var pendingUndoSeekActions: [SeekUndoAction.ID: SeekUndoAction] = [:]
 
     var playbackDidFinish: ((EpisodeDTO) -> Void)?
 
@@ -104,6 +105,12 @@ final class PlayerController: ObservableObject {
         updateNowPlayingPlaybackState()
     }
 
+    func pauseForSleepTimer() {
+        player.pause()
+        isPlaying = false
+        updateNowPlayingPlaybackState()
+    }
+
     func seek(by seconds: TimeInterval) {
         let current = currentPlaybackSeconds
         performSeek(to: current + seconds, from: current, resetAutoSkip: true, recordsUndo: true)
@@ -123,14 +130,13 @@ final class PlayerController: ObservableObject {
     }
 
     func undoSeek(_ action: SeekUndoAction) {
-        guard undoSeekAction?.id == action.id else { return }
-        undoSeekAction = nil
+        guard pendingUndoSeekActions[action.id] != nil else { return }
+        pendingUndoSeekActions[action.id] = nil
         performSeek(to: action.from, resetAutoSkip: true, recordsUndo: false)
     }
 
     func dismissUndoSeek(_ action: SeekUndoAction) {
-        guard undoSeekAction?.id == action.id else { return }
-        undoSeekAction = nil
+        pendingUndoSeekActions[action.id] = nil
     }
 
     func updateAutoSkipChapters(_ chapters: [EpisodeChapterDTO]) {
@@ -171,7 +177,9 @@ final class PlayerController: ObservableObject {
             lastAutoSkippedChapterID = nil
         }
         if recordsUndo, currentEpisode != nil, abs(targetSeconds - source) >= 0.5 {
-            undoSeekAction = SeekUndoAction(from: source, to: targetSeconds)
+            let action = SeekUndoAction(from: source, to: targetSeconds)
+            pendingUndoSeekActions[action.id] = action
+            undoSeekAction = action
         }
         elapsed = targetSeconds
         updateCurrentArtworkForPlaybackPosition()
@@ -326,6 +334,7 @@ final class PlayerController: ObservableObject {
         center.skipBackwardCommand.isEnabled = true
         center.nextTrackCommand.isEnabled = true
         center.previousTrackCommand.isEnabled = true
+        center.changePlaybackPositionCommand.isEnabled = true
 
         guard !didInstallRemoteCommandHandlers else { return }
         didInstallRemoteCommandHandlers = true
@@ -367,6 +376,11 @@ final class PlayerController: ObservableObject {
         }
         center.previousTrackCommand.addTarget { [weak self] _ in
             Task { @MainActor in self?.seek(by: -SeekSettings.backSeconds) }
+            return .success
+        }
+        center.changePlaybackPositionCommand.addTarget { [weak self] event in
+            guard let event = event as? MPChangePlaybackPositionCommandEvent else { return .commandFailed }
+            Task { @MainActor in self?.seek(toTime: event.positionTime) }
             return .success
         }
     }
@@ -571,5 +585,6 @@ final class PlayerController: ObservableObject {
         #if DEBUG
         print("[PodcastsDebug][NowPlayingInfo] \(message)")
         #endif
+        DiagnosticsCenter.shared.log("[NowPlayingInfo] \(message)")
     }
 }

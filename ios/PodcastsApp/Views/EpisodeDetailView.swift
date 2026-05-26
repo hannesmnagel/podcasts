@@ -11,6 +11,8 @@ final class EpisodeDetailViewController: UIViewController {
     private let scrollView = UIScrollView()
     private let contentStack = UIStackView()
     private let actionContainer = UIView()
+    private let controlsContainer = UIView()
+    private let heroArtworkView = ArtworkImageView(cornerRadius: 20)
     private let playButton = UIButton(type: .system)
     private let playedButton = UIButton(type: .system)
     private let downloadButton = UIButton(type: .system)
@@ -21,7 +23,9 @@ final class EpisodeDetailViewController: UIViewController {
     private var isLoadingTranscript = false
     private var isDownloading = false
     private var didConfigureActionHeader = false
+    private var didStartBackgroundRefresh = false
     private var downloadProgressCancellable: AnyCancellable?
+    private var playerStateCancellable: AnyCancellable?
 
     init(episode: EpisodeDTO, modelContext: ModelContext, player: PlayerController) {
         self.episode = episode
@@ -40,14 +44,21 @@ final class EpisodeDetailViewController: UIViewController {
         view.backgroundColor = .systemGroupedBackground
         configureScrollView()
         configureActionHeader()
+        bindPlayerState()
         rebuildContent()
         loadCachedArtifacts()
-        Task { await refreshTranscriptIfNeeded() }
     }
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         updateActionHeader()
+    }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        guard !didStartBackgroundRefresh else { return }
+        didStartBackgroundRefresh = true
+        Task { await refreshTranscriptIfNeeded() }
     }
 
     private func configureScrollView() {
@@ -59,7 +70,7 @@ final class EpisodeDetailViewController: UIViewController {
         contentStack.axis = .vertical
         contentStack.spacing = 24
         contentStack.isLayoutMarginsRelativeArrangement = true
-        contentStack.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 20, leading: 20, bottom: 36, trailing: 20)
+        contentStack.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 16, leading: 10, bottom: 36, trailing: 10)
         scrollView.addSubview(contentStack)
 
         NSLayoutConstraint.activate([
@@ -82,9 +93,9 @@ final class EpisodeDetailViewController: UIViewController {
 
         let titleLabel = UILabel()
         titleLabel.text = episode.title
-        titleLabel.font = .preferredFont(forTextStyle: .title2)
+        titleLabel.font = .preferredFont(forTextStyle: .title3)
         titleLabel.adjustsFontForContentSizeCategory = true
-        titleLabel.numberOfLines = 0
+        titleLabel.numberOfLines = 2
 
         let metadataLabel = UILabel()
         metadataLabel.text = episode.publishedAt?.formatted(date: .abbreviated, time: .omitted)
@@ -92,10 +103,18 @@ final class EpisodeDetailViewController: UIViewController {
         metadataLabel.textColor = .secondaryLabel
         metadataLabel.adjustsFontForContentSizeCategory = true
 
-        playButton.configuration = .filled()
-        playButton.configuration?.baseBackgroundColor = .systemOrange
-        playButton.configuration?.baseForegroundColor = .white
-        playButton.configuration?.cornerStyle = .large
+        if #available(iOS 26.0, *) {
+            playButton.configuration = .glass()
+            playButton.configuration?.baseForegroundColor = .label
+        } else {
+            playButton.configuration = .tinted()
+            playButton.configuration?.baseBackgroundColor = .secondarySystemBackground
+            playButton.configuration?.baseForegroundColor = .label
+        }
+        playButton.configuration?.cornerStyle = .capsule
+        playButton.configuration?.imagePadding = 10
+        playButton.configuration?.contentInsets = NSDirectionalEdgeInsets(top: 12, leading: 18, bottom: 12, trailing: 18)
+        playButton.configuration?.preferredSymbolConfigurationForImage = UIImage.SymbolConfiguration(pointSize: 18, weight: .semibold)
         playButton.addTarget(self, action: #selector(playEpisode), for: .touchUpInside)
 
         configureActionButton(playedButton, title: "Played", systemImage: "checkmark.circle", action: #selector(togglePlayed))
@@ -108,8 +127,8 @@ final class EpisodeDetailViewController: UIViewController {
         let secondaryRow = UIStackView(arrangedSubviews: [playedButton, shareButton, podcastButton, downloadButton])
         secondaryRow.translatesAutoresizingMaskIntoConstraints = false
         secondaryRow.axis = .horizontal
-        secondaryRow.spacing = 12
-        secondaryRow.distribution = .equalSpacing
+        secondaryRow.spacing = 10
+        secondaryRow.distribution = .fillEqually
 
         downloadProgressView.isHidden = true
         downloadProgressView.tintColor = .systemOrange
@@ -118,19 +137,47 @@ final class EpisodeDetailViewController: UIViewController {
         downloadProgressLabel.textColor = .secondaryLabel
         downloadProgressLabel.adjustsFontForContentSizeCategory = true
 
-        let stack = UIStackView(arrangedSubviews: [titleLabel, metadataLabel, playButton, secondaryRow, downloadProgressView, downloadProgressLabel])
+        heroArtworkView.contentMode = .scaleAspectFit
+        heroArtworkView.clipsToBounds = true
+        heroArtworkView.backgroundColor = .clear
+        heroArtworkView.layer.cornerRadius = 12
+        heroArtworkView.load(url: artworkURL, minimumPixelDimension: 900)
+
+        let topStack = UIStackView(arrangedSubviews: [titleLabel, metadataLabel])
+        topStack.translatesAutoresizingMaskIntoConstraints = false
+        topStack.axis = .vertical
+        topStack.spacing = 10
+
+        let controlsStack = UIStackView(arrangedSubviews: [playButton, secondaryRow, downloadProgressView, downloadProgressLabel])
+        controlsStack.translatesAutoresizingMaskIntoConstraints = false
+        controlsStack.axis = .vertical
+        controlsStack.spacing = 10
+
+        controlsContainer.backgroundColor = .clear
+        controlsContainer.addSubview(controlsStack)
+        NSLayoutConstraint.activate([
+            controlsStack.leadingAnchor.constraint(equalTo: controlsContainer.leadingAnchor),
+            controlsStack.trailingAnchor.constraint(equalTo: controlsContainer.trailingAnchor),
+            controlsStack.topAnchor.constraint(equalTo: controlsContainer.topAnchor),
+            controlsStack.bottomAnchor.constraint(equalTo: controlsContainer.bottomAnchor)
+        ])
+
+        let stack = UIStackView(arrangedSubviews: [topStack])
         stack.translatesAutoresizingMaskIntoConstraints = false
         stack.axis = .vertical
-        stack.spacing = 14
+        stack.spacing = 12
         actionContainer.addSubview(stack)
+        actionContainer.backgroundColor = .secondarySystemGroupedBackground
+        actionContainer.layer.cornerRadius = 18
+        actionContainer.clipsToBounds = true
 
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: actionContainer.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: actionContainer.trailingAnchor),
-            stack.topAnchor.constraint(equalTo: actionContainer.topAnchor),
-            stack.bottomAnchor.constraint(equalTo: actionContainer.bottomAnchor),
-            playButton.heightAnchor.constraint(equalToConstant: 54),
-            secondaryRow.heightAnchor.constraint(equalToConstant: 48)
+            stack.leadingAnchor.constraint(equalTo: actionContainer.leadingAnchor, constant: 14),
+            stack.trailingAnchor.constraint(equalTo: actionContainer.trailingAnchor, constant: -14),
+            stack.topAnchor.constraint(equalTo: actionContainer.topAnchor, constant: 14),
+            stack.bottomAnchor.constraint(equalTo: actionContainer.bottomAnchor, constant: -14),
+            playButton.heightAnchor.constraint(equalToConstant: 56),
+            secondaryRow.heightAnchor.constraint(equalToConstant: 44)
         ])
 
         updateActionHeader()
@@ -142,7 +189,9 @@ final class EpisodeDetailViewController: UIViewController {
             view.removeFromSuperview()
         }
 
+        contentStack.addArrangedSubview(makeHeroHeader())
         contentStack.addArrangedSubview(actionContainer)
+        contentStack.addArrangedSubview(controlsContainer)
         contentStack.addArrangedSubview(makeNotesSection())
         contentStack.addArrangedSubview(makeTranscriptSection())
         if chapters.count > 1 {
@@ -153,9 +202,25 @@ final class EpisodeDetailViewController: UIViewController {
 
     private func makeNotesSection() -> UIView {
         let notesView = episode.summary.map {
-            ShowNotesText.view(raw: $0)
+            ShowNotesText.collapsibleView(raw: $0)
         } ?? bodyLabel("No Episode Notes")
         return section(title: "Episode Notes", arrangedSubviews: [notesView])
+    }
+
+    private func makeHeroHeader() -> UIView {
+        heroArtworkView.removeFromSuperview()
+        heroArtworkView.translatesAutoresizingMaskIntoConstraints = false
+        let heroContainer = UIView()
+        heroContainer.backgroundColor = .clear
+        heroContainer.addSubview(heroArtworkView)
+        NSLayoutConstraint.activate([
+            heroArtworkView.leadingAnchor.constraint(equalTo: heroContainer.leadingAnchor),
+            heroArtworkView.trailingAnchor.constraint(equalTo: heroContainer.trailingAnchor),
+            heroArtworkView.topAnchor.constraint(equalTo: heroContainer.topAnchor),
+            heroArtworkView.bottomAnchor.constraint(equalTo: heroContainer.bottomAnchor),
+            heroContainer.heightAnchor.constraint(equalToConstant: 380)
+        ])
+        return heroContainer
     }
 
     private func makeTranscriptSection() -> UIView {
@@ -176,8 +241,16 @@ final class EpisodeDetailViewController: UIViewController {
             configuration.title = "Show Transcript"
             configuration.image = UIImage(systemName: "doc.text")
             configuration.imagePadding = 8
-            configuration.baseBackgroundColor = .systemOrange
-            configuration.baseForegroundColor = .white
+            if #available(iOS 26.0, *) {
+                configuration = .prominentGlass()
+                configuration.title = "Show Transcript"
+                configuration.image = UIImage(systemName: "doc.text")
+                configuration.imagePadding = 8
+                configuration.baseForegroundColor = .systemOrange
+            } else {
+                configuration.baseBackgroundColor = .systemOrange
+                configuration.baseForegroundColor = .white
+            }
             configuration.cornerStyle = .large
 
             let button = UIButton(type: .system)
@@ -197,7 +270,13 @@ final class EpisodeDetailViewController: UIViewController {
     }
 
     private func section(title: String, arrangedSubviews: [UIView]) -> UIView {
+        let card = UIView()
+        card.backgroundColor = .secondarySystemGroupedBackground
+        card.layer.cornerRadius = 18
+        card.clipsToBounds = true
+
         let stack = UIStackView()
+        stack.translatesAutoresizingMaskIntoConstraints = false
         stack.axis = .vertical
         stack.spacing = 10
 
@@ -209,7 +288,14 @@ final class EpisodeDetailViewController: UIViewController {
         stack.addArrangedSubview(titleLabel)
 
         arrangedSubviews.forEach { stack.addArrangedSubview($0) }
-        return stack
+        card.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 16),
+            stack.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -16),
+            stack.topAnchor.constraint(equalTo: card.topAnchor, constant: 14),
+            stack.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -14)
+        ])
+        return card
     }
 
     private func bodyLabel(_ text: String) -> UILabel {
@@ -236,7 +322,9 @@ final class EpisodeDetailViewController: UIViewController {
         button.titleLabel?.numberOfLines = 0
         button.addAction(UIAction { [weak self] _ in
             guard let self else { return }
-            FloatingDownloadHUD.shared.show(progressID: episode.stableID, title: episode.title)
+            if LibraryStore.downloadedEpisode(for: episode, in: self.modelContext) == nil {
+                FloatingDownloadHUD.shared.show(progressID: episode.stableID, title: episode.title)
+            }
             Task { [weak self] in
                 guard let self else { return }
                 guard let playableEpisode = await LibraryStore.playableDownloadedEpisode(for: episode, in: self.modelContext) else {
@@ -268,23 +356,27 @@ final class EpisodeDetailViewController: UIViewController {
     }
 
     private func configureActionButton(_ button: UIButton, title: String, systemImage: String, action: Selector) {
-        var configuration = UIButton.Configuration.bordered()
+        var configuration: UIButton.Configuration
+        if #available(iOS 26.0, *) {
+            configuration = .glass()
+            configuration.baseForegroundColor = .label
+        } else {
+            configuration = .bordered()
+        }
         configuration.image = UIImage(systemName: systemImage)
-        configuration.cornerStyle = .medium
-        configuration.contentInsets = NSDirectionalEdgeInsets(top: 8, leading: 10, bottom: 8, trailing: 10)
+        configuration.cornerStyle = .capsule
+        configuration.contentInsets = NSDirectionalEdgeInsets(top: 6, leading: 8, bottom: 6, trailing: 8)
         button.configuration = configuration
         button.accessibilityLabel = title
         button.titleLabel?.adjustsFontForContentSizeCategory = true
         button.addTarget(self, action: action, for: .touchUpInside)
-        button.widthAnchor.constraint(equalToConstant: 54).isActive = true
-        button.heightAnchor.constraint(equalToConstant: 44).isActive = true
+        button.heightAnchor.constraint(equalToConstant: 46).isActive = true
     }
 
     private func updateActionHeader() {
         let isCurrent = player.currentEpisode?.stableID == episode.stableID
         playButton.configuration?.title = isCurrent && player.isPlaying ? "Pause" : "Play"
         playButton.configuration?.image = UIImage(systemName: isCurrent && player.isPlaying ? "pause.fill" : "play.fill")
-        playButton.configuration?.imagePadding = 8
 
         let isPlayed = LibraryStore.isPlayed(episode, in: modelContext)
         playedButton.configuration?.image = UIImage(systemName: isPlayed ? "circle" : "checkmark.circle")
@@ -295,6 +387,15 @@ final class EpisodeDetailViewController: UIViewController {
         downloadButton.configuration?.image = UIImage(systemName: isDownloading ? "arrow.down.circle.dotted" : (isDownloaded ? "trash" : "arrow.down.circle"))
         downloadButton.accessibilityLabel = isDownloading ? "Downloading" : (isDownloaded ? "Remove Download" : "Download")
         downloadButton.tintColor = isDownloaded ? .systemRed : view.tintColor
+    }
+
+    private func bindPlayerState() {
+        playerStateCancellable = player.$currentEpisode
+            .combineLatest(player.$isPlaying)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _, _ in
+                self?.updateActionHeader()
+            }
     }
 
     private func loadCachedArtifacts() {
@@ -388,7 +489,9 @@ final class EpisodeDetailViewController: UIViewController {
             player.togglePlayPause()
             updateActionHeader()
         } else {
-            FloatingDownloadHUD.shared.show(progressID: episode.stableID, title: episode.title)
+            if LibraryStore.downloadedEpisode(for: episode, in: self.modelContext) == nil {
+                FloatingDownloadHUD.shared.show(progressID: episode.stableID, title: episode.title)
+            }
             Task { [weak self] in
                 guard let self else { return }
                 guard let playableEpisode = await LibraryStore.playableDownloadedEpisode(for: self.episode, in: self.modelContext) else {
@@ -488,13 +591,7 @@ final class EpisodeDetailViewController: UIViewController {
     }
 
     private func showDownloadFailed() {
-        let alert = UIAlertController(
-            title: "Download Failed",
-            message: "The episode audio could not be saved for playback. Try again on a stable connection.",
-            preferredStyle: .alert
-        )
-        alert.addAction(UIAlertAction(title: "OK", style: .default))
-        present(alert, animated: true)
+        FloatingDownloadHUD.shared.showFailure(progressID: episode.stableID, title: episode.title)
     }
 }
 
@@ -636,7 +733,9 @@ private final class TranscriptTextViewController: UIViewController, UITableViewD
         if player.currentEpisode?.stableID == episode.stableID {
             player.seek(toTime: start)
         } else {
-            FloatingDownloadHUD.shared.show(progressID: episode.stableID, title: episode.title)
+            if LibraryStore.downloadedEpisode(for: episode, in: self.modelContext) == nil {
+                FloatingDownloadHUD.shared.show(progressID: episode.stableID, title: episode.title)
+            }
             Task { [weak self] in
                 guard let self else { return }
                 guard let playableEpisode = await LibraryStore.playableDownloadedEpisode(for: self.episode, in: self.modelContext) else {
@@ -653,13 +752,7 @@ private final class TranscriptTextViewController: UIViewController, UITableViewD
     }
 
     private func showDownloadFailed() {
-        let alert = UIAlertController(
-            title: "Download Failed",
-            message: "The episode audio could not be saved for playback. Try again on a stable connection.",
-            preferredStyle: .alert
-        )
-        alert.addAction(UIAlertAction(title: "OK", style: .default))
-        present(alert, animated: true)
+        FloatingDownloadHUD.shared.showFailure(progressID: episode.stableID, title: episode.title)
     }
 }
 

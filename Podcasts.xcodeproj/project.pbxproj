@@ -13,6 +13,7 @@
 		168118ECCED19189E112292B /* ChapterSkipRule.swift in Sources */ = {isa = PBXBuildFile; fileRef = 812BC4D227969BB6B156773E /* ChapterSkipRule.swift */; };
 		1F63293375470AE95C7DAE05 /* LocalEpisodeArtifact.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8DAA77D218624058B59DA03B /* LocalEpisodeArtifact.swift */; };
 		23A4DC844562DFA30339C335 /* LocalMediaCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = EAC297F4693CC713D46ED366 /* LocalMediaCache.swift */; };
+		388931E988C82D041045E200 /* DiagnosticsCenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 219D35ADF6582AF3BFBECBF6 /* DiagnosticsCenter.swift */; };
 		389954AC698C02A916345AC9 /* Playlist.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E0ED6534E4986F54972EC12 /* Playlist.swift */; };
 		3AF3FCF297E9AB121681DBCD /* LibraryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C389E5B6E09857A50E692F67 /* LibraryStore.swift */; };
 		49E0F89AEAF69A66529D0C8E /* SearchView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 30397A1B5661ABE93A71ACFB /* SearchView.swift */; };
@@ -29,6 +30,7 @@
 		848A9A77C2EAFB63E3A8799B /* MiniPlayerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F8B729364B5024ABA775E3BB /* MiniPlayerView.swift */; };
 		8908DA6AC71247EFF79A75DC /* WorkerMonitorApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 79A5E4DDBB49A7D61F5787AE /* WorkerMonitorApp.swift */; };
 		8B4EEFB01F0703AB7ECEDC0C /* UndoSeekHUD.swift in Sources */ = {isa = PBXBuildFile; fileRef = 319380A47B9BC4B74F90DBEF /* UndoSeekHUD.swift */; };
+		90AB3EB047FABD1643C8B17C /* BackgroundRefreshStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0ABFA97944A6D503E72D82E9 /* BackgroundRefreshStore.swift */; };
 		9700A3E6A9A0F8E7D9B6C3F8 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 9A1C69FE1408B1115CF6F1C3 /* Assets.xcassets */; };
 		9FD06DC0C08EAC8AF5D3E1BB /* DownloadProgressListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 32FCD03B547CD9B4B56DABA8 /* DownloadProgressListView.swift */; };
 		A3CA3B482522F978DC36CFD5 /* EpisodeListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4BD4261567CDA01B0EA4D8E2 /* EpisodeListView.swift */; };
@@ -44,8 +46,10 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		0ABFA97944A6D503E72D82E9 /* BackgroundRefreshStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundRefreshStore.swift; sourceTree = "<group>"; };
 		0AF8439699354FD0F2AE4753 /* NetworkMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkMonitor.swift; sourceTree = "<group>"; };
 		1045204BCEB2B486E3CADE53 /* RootTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootTabView.swift; sourceTree = "<group>"; };
+		219D35ADF6582AF3BFBECBF6 /* DiagnosticsCenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsCenter.swift; sourceTree = "<group>"; };
 		246138886CAA032954429017 /* PlayerController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayerController.swift; sourceTree = "<group>"; };
 		26497049BF3384A069F81FA0 /* PodcastsApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PodcastsApp.swift; sourceTree = "<group>"; };
 		30397A1B5661ABE93A71ACFB /* SearchView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchView.swift; sourceTree = "<group>"; };
@@ -91,6 +95,8 @@
 				637695869DF00B55472FA7AC /* ArtifactDataProcessor.swift */,
 				BC1F61CD6A1ADE3A6D7FB931 /* AudioFingerprint.swift */,
 				37195B288FF63CB94CF9FD15 /* BackendClient.swift */,
+				0ABFA97944A6D503E72D82E9 /* BackgroundRefreshStore.swift */,
+				219D35ADF6582AF3BFBECBF6 /* DiagnosticsCenter.swift */,
 				ECA6BB4992C4C3E331120520 /* DownloadSettings.swift */,
 				6F48B7A94CCEC79440025DB3 /* EpisodeDataProcessor.swift */,
 				C389E5B6E09857A50E692F67 /* LibraryStore.swift */,
@@ -308,8 +314,10 @@
 				5C027FBB4C4DC63177A7075F /* ArtifactDataProcessor.swift in Sources */,
 				CCAB1B580940769F80DFBECA /* AudioFingerprint.swift in Sources */,
 				D33149ACB7F6342B1E389034 /* BackendClient.swift in Sources */,
+				90AB3EB047FABD1643C8B17C /* BackgroundRefreshStore.swift in Sources */,
 				168118ECCED19189E112292B /* ChapterSkipRule.swift in Sources */,
 				F7B8B9683B6D09B5176C05AA /* ChapterSkipRulesView.swift in Sources */,
+				388931E988C82D041045E200 /* DiagnosticsCenter.swift in Sources */,
 				9FD06DC0C08EAC8AF5D3E1BB /* DownloadProgressListView.swift in Sources */,
 				CF5155921133475FEE365FDF /* DownloadSettings.swift in Sources */,
 				B0C0891C67EF77DA0223693E /* EpisodeDataProcessor.swift in Sources */,
@@ -390,7 +398,9 @@
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = nonisolated;
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_STRICT_CONCURRENCY = complete;
 				SWIFT_VERSION = 6.0;
 			};
 			name = Release;
@@ -421,7 +431,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 40;
+				CURRENT_PROJECT_VERSION = 68;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				INFOPLIST_FILE = ios/PodcastsApp/Info.plist;
 				INFOPLIST_KEY_BackendBaseURL = "https://podcasts.hannesnagel.com";
@@ -446,7 +456,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 40;
+				CURRENT_PROJECT_VERSION = 68;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				INFOPLIST_FILE = ios/PodcastsApp/Info.plist;
 				INFOPLIST_KEY_BackendBaseURL = "https://podcasts.hannesnagel.com";
@@ -544,7 +554,9 @@
 				ONLY_ACTIVE_ARCH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = nonisolated;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_STRICT_CONCURRENCY = complete;
 				SWIFT_VERSION = 6.0;
 			};
 			name = Debug;

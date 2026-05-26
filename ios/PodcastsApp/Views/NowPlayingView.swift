@@ -2,8 +2,9 @@ import AVKit
 import Combine
 import SwiftData
 import UIKit
+import WebKit
 
-final class NowPlayingViewController: UIViewController, UIGestureRecognizerDelegate, UIScrollViewDelegate, UITableViewDataSource, UITableViewDelegate {
+final class NowPlayingViewController: UIViewController, UIGestureRecognizerDelegate, UIScrollViewDelegate, WKNavigationDelegate, WKScriptMessageHandler {
     private enum DisplayMode {
         case artwork
         case transcript
@@ -25,6 +26,11 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
     private var didSetInitialMediaPage = false
     private var hasInteractedWithMediaPager = false
     private var progressSeekStart: TimeInterval?
+    private var sleepTimerStatusCancellable: AnyCancellable?
+    private var transcriptWebContentLoaded = false
+    private var transcriptUserScrollLockUntil = Date.distantPast
+    private var transcriptNeedsReload = true
+    private var chapterRowViews: [ChapterProgressRowView] = []
 
     var showEpisodeDetails: ((EpisodeDTO) -> Void)?
     var showPodcast: ((EpisodeDTO) -> Void)?
@@ -37,7 +43,16 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
     private let artworkPage = UIView()
     private let currentChapterLabel = UILabel()
     private let artworkView = ArtworkImageView(cornerRadius: 20)
-    private let transcriptTableView = UITableView(frame: .zero, style: .plain)
+    private let transcriptWebView: WKWebView = {
+        let config = WKWebViewConfiguration()
+        config.defaultWebpagePreferences.allowsContentJavaScript = true
+        let webView = WKWebView(frame: .zero, configuration: config)
+        webView.translatesAutoresizingMaskIntoConstraints = false
+        webView.isOpaque = false
+        webView.backgroundColor = .clear
+        webView.scrollView.backgroundColor = .clear
+        return webView
+    }()
     private let transcriptPlaceholderLabel = UILabel()
     private let chaptersNotesScrollView = UIScrollView()
     private let chaptersNotesStack = UIStackView()
@@ -149,19 +164,13 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
         artworkPage.addSubview(artworkView)
         artworkPage.addSubview(currentChapterLabel)
 
-        transcriptTableView.translatesAutoresizingMaskIntoConstraints = false
-        transcriptTableView.backgroundColor = UIColor.white.withAlphaComponent(0.06)
-        transcriptTableView.separatorStyle = .none
-        transcriptTableView.showsVerticalScrollIndicator = false
-        transcriptTableView.alwaysBounceVertical = true
-        transcriptTableView.contentInset = UIEdgeInsets(top: 12, left: 0, bottom: 12, right: 0)
-        transcriptTableView.dataSource = self
-        transcriptTableView.delegate = self
-        transcriptTableView.register(NowPlayingTranscriptSegmentCell.self, forCellReuseIdentifier: NowPlayingTranscriptSegmentCell.reuseIdentifier)
-        transcriptTableView.rowHeight = UITableView.automaticDimension
-        transcriptTableView.estimatedRowHeight = 88
-        transcriptTableView.layer.cornerRadius = 20
-        transcriptTableView.clipsToBounds = true
+        transcriptWebView.layer.cornerRadius = 20
+        transcriptWebView.clipsToBounds = true
+        transcriptWebView.navigationDelegate = self
+        transcriptWebView.configuration.userContentController.add(self, name: "seekSegment")
+        transcriptWebView.scrollView.delegate = self
+        transcriptWebView.scrollView.alwaysBounceVertical = true
+        transcriptWebView.scrollView.showsVerticalScrollIndicator = false
 
         transcriptPlaceholderLabel.translatesAutoresizingMaskIntoConstraints = false
         transcriptPlaceholderLabel.textColor = .secondaryLabel
@@ -170,7 +179,12 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
         transcriptPlaceholderLabel.numberOfLines = 0
         transcriptPlaceholderLabel.textAlignment = .center
         transcriptPlaceholderLabel.isHidden = true
-        transcriptTableView.backgroundView = transcriptPlaceholderLabel
+        transcriptWebView.addSubview(transcriptPlaceholderLabel)
+        NSLayoutConstraint.activate([
+            transcriptPlaceholderLabel.leadingAnchor.constraint(equalTo: transcriptWebView.leadingAnchor, constant: 16),
+            transcriptPlaceholderLabel.trailingAnchor.constraint(equalTo: transcriptWebView.trailingAnchor, constant: -16),
+            transcriptPlaceholderLabel.centerYAnchor.constraint(equalTo: transcriptWebView.centerYAnchor)
+        ])
 
         chaptersNotesScrollView.translatesAutoresizingMaskIntoConstraints = false
         chaptersNotesScrollView.backgroundColor = UIColor.white.withAlphaComponent(0.06)
@@ -182,7 +196,7 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
         chaptersNotesStack.isLayoutMarginsRelativeArrangement = true
         chaptersNotesStack.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 18, leading: 18, bottom: 18, trailing: 18)
         chaptersNotesScrollView.addSubview(chaptersNotesStack)
-        [transcriptTableView, artworkPage, chaptersNotesScrollView].forEach(mediaPageStack.addArrangedSubview)
+        [transcriptWebView, artworkPage, chaptersNotesScrollView].forEach(mediaPageStack.addArrangedSubview)
         contentContainer.addSubview(mediaPageStack)
 
         progressControl.translatesAutoresizingMaskIntoConstraints = false
@@ -277,7 +291,7 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
             mediaPageStack.bottomAnchor.constraint(equalTo: contentContainer.contentLayoutGuide.bottomAnchor),
             mediaPageStack.heightAnchor.constraint(equalTo: contentContainer.frameLayoutGuide.heightAnchor),
             mediaPageStack.widthAnchor.constraint(equalTo: contentContainer.frameLayoutGuide.widthAnchor, multiplier: 3),
-            transcriptTableView.widthAnchor.constraint(equalTo: contentContainer.frameLayoutGuide.widthAnchor),
+            transcriptWebView.widthAnchor.constraint(equalTo: contentContainer.frameLayoutGuide.widthAnchor),
             artworkPage.widthAnchor.constraint(equalTo: contentContainer.frameLayoutGuide.widthAnchor),
             artworkView.leadingAnchor.constraint(equalTo: artworkPage.leadingAnchor),
             artworkView.trailingAnchor.constraint(equalTo: artworkPage.trailingAnchor),
@@ -446,6 +460,10 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
             .sink { [weak self] _, _, _, _ in self?.update() }
             .store(in: &cancellables)
         player.$speed.receive(on: DispatchQueue.main).sink { [weak self] _ in self?.update() }.store(in: &cancellables)
+        SleepTimerState.shared.$state
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.updateSleepTimerUI() }
+            .store(in: &cancellables)
     }
 
     private func configureDismissGesture() {
@@ -477,8 +495,11 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
         progressControl.isEnabled = player.duration != nil
         progressControl.value = progress
         updateChapterSkipButtons()
+        updateChapterRowProgress()
         elapsedLabel.text = format(player.elapsed)
         remainingLabel.text = "-\(format(remaining))"
+        handleSleepTimerIfNeeded()
+        updateSleepTimerUI()
     }
 
     private func updateChapterSkipButtons() {
@@ -506,18 +527,26 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
 
     private func rebuildTranscriptPanel() {
         currentTranscriptSegmentIndex = nil
+        transcriptWebContentLoaded = false
+        transcriptNeedsReload = true
 
         guard !transcriptSegments.isEmpty else {
             let text = transcriptText?.isEmpty == false ? transcriptText! : "No transcript yet."
             transcriptPlaceholderLabel.text = text
             transcriptPlaceholderLabel.isHidden = false
-            transcriptTableView.reloadData()
             return
         }
 
         transcriptPlaceholderLabel.text = nil
         transcriptPlaceholderLabel.isHidden = true
-        transcriptTableView.reloadData()
+        loadTranscriptIfNeeded()
+    }
+
+    private func loadTranscriptIfNeeded(force: Bool = false) {
+        guard force || transcriptNeedsReload else { return }
+        transcriptNeedsReload = false
+        transcriptWebContentLoaded = false
+        transcriptWebView.loadHTMLString(transcriptHTML(), baseURL: nil)
     }
 
     private func updateTranscriptPlaybackPosition() {
@@ -532,47 +561,99 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
         applyTranscriptHighlight(previousIndex: previousIndex, scroll: displayMode == .transcript)
     }
 
-    private func applyTranscriptHighlight(previousIndex: Int? = nil, scroll: Bool) {
+    private func applyTranscriptHighlight(previousIndex _: Int? = nil, scroll: Bool) {
         guard !transcriptSegments.isEmpty else { return }
-        let changed = [previousIndex, currentTranscriptSegmentIndex]
-            .compactMap { $0 }
-            .filter { transcriptSegments.indices.contains($0) }
-        if !changed.isEmpty {
-            let indexPaths = Array(Set(changed)).map { IndexPath(row: $0, section: 0) }
-            transcriptTableView.reloadRows(at: indexPaths, with: .none)
-        }
-        if scroll, let currentTranscriptSegmentIndex {
-            scrollTranscriptToSegmentIfNeeded(currentTranscriptSegmentIndex)
-        }
+        guard let currentTranscriptSegmentIndex, transcriptWebContentLoaded else { return }
+        let allowScroll = scroll && Date() >= transcriptUserScrollLockUntil
+        transcriptWebView.evaluateJavaScript("window.podcatcherSetCurrentSegment(\(currentTranscriptSegmentIndex), \(allowScroll ? "true" : "false"));", completionHandler: nil)
     }
 
-    private func scrollTranscriptToSegmentIfNeeded(_ index: Int) {
-        guard !transcriptTableView.isDragging,
-              !transcriptTableView.isDecelerating,
-              !transcriptTableView.isTracking,
-              transcriptSegments.indices.contains(index) else { return }
+    private func transcriptHTML() -> String {
+        guard !transcriptSegments.isEmpty else {
+            return "<!doctype html><html><body style=\"margin:0;background:transparent;\"></body></html>"
+        }
+        let rows = transcriptSegments.enumerated().map { index, segment in
+            let timeText = segment.start.map(format) ?? segment.originalStart.map { "~\(format($0))" } ?? ""
+            let insertedClass = segment.isInsertedAudio ? " inserted" : ""
+            let prefix = segment.isInsertedAudio ? "Inserted audio / not in transcript " : ""
+            let normalized = normalizeTranscriptDisplayText(prefix + segment.text)
+            return """
+            <div class="row\(insertedClass)" id="segment-\(index)" data-index="\(index)" data-seekable="\(segment.isInsertedAudio ? "false" : "true")">
+              <span class="time">\(escapeHTML(timeText))</span>
+              <span class="text">\(escapeHTML(normalized))</span>
+            </div>
+            """
+        }.joined(separator: "\n")
 
-        let indexPath = IndexPath(row: index, section: 0)
-        transcriptTableView.layoutIfNeeded()
-        let rowRect = transcriptTableView.rectForRow(at: indexPath)
-        guard rowRect != .zero else { return }
+        return """
+        <!doctype html>
+        <html>
+        <head>
+          <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+          <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline';">
+          <style>
+            body { margin:0; padding:12px 14px; font: -apple-system-body; background: rgba(255,255,255,0.06); color: rgba(255,255,255,0.92); -webkit-user-select:text; user-select:text; }
+            .row { display:block; color:inherit; padding:6px 10px; border-radius:10px; }
+            .time { display:block; margin:0 0 3px 0; font: 600 11px ui-monospace, SFMono-Regular, Menlo, monospace; color: rgba(255,255,255,0.42); letter-spacing: 0.2px; -webkit-user-select:none; user-select:none; }
+            .text { display:block; color: rgba(255,255,255,0.80); line-height:1.24; white-space:normal; word-break:break-word; }
+            .row.current { background: rgba(255,149,0,0.18); }
+            .row.current .time { color: rgba(255,149,0,1); }
+            .row.inserted .time, .row.inserted .text { color: rgba(191,90,242,0.9); }
+          </style>
+          <script>
+            let currentIndex = null;
+            window.podcatcherSetCurrentSegment = function(index, allowScroll) {
+              const previous = currentIndex === null ? null : document.getElementById('segment-' + currentIndex);
+              if (previous) previous.classList.remove('current');
+              const current = document.getElementById('segment-' + index);
+              if (!current) return;
+              current.classList.add('current');
+              currentIndex = index;
+              if (!allowScroll) return;
+              const viewportHeight = document.documentElement.clientHeight;
+              const target = current.offsetTop + (current.offsetHeight / 2) - (viewportHeight / 2);
+              const rowCenter = current.getBoundingClientRect().top + current.offsetHeight / 2;
+              const viewCenter = viewportHeight / 2;
+              if (Math.abs(rowCenter - viewCenter) > current.offsetHeight * 0.5) {
+                window.scrollTo({ top: Math.max(0, target), behavior: 'smooth' });
+              }
+            };
+            document.addEventListener('click', function(event) {
+              const row = event.target.closest('.row');
+              if (!row || row.dataset.seekable !== 'true') return;
+              const selected = window.getSelection ? window.getSelection().toString().trim() : '';
+              if (selected.length > 0) return;
+              const index = parseInt(row.dataset.index || '', 10);
+              if (Number.isNaN(index)) return;
+              window.webkit.messageHandlers.seekSegment.postMessage(index);
+            }, true);
+          </script>
+        </head>
+        <body>\(rows)</body>
+        </html>
+        """
+    }
 
-        let visibleTop = transcriptTableView.contentOffset.y + transcriptTableView.adjustedContentInset.top
-        let visibleBottom = transcriptTableView.contentOffset.y + transcriptTableView.bounds.height - transcriptTableView.adjustedContentInset.bottom
-        let targetCenterY = rowRect.midY
-        let visibleCenterY = (visibleTop + visibleBottom) / 2
-        guard abs(targetCenterY - visibleCenterY) > rowRect.height / 2 else { return }
+    private func escapeHTML(_ text: String) -> String {
+        text
+            .replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+            .replacingOccurrences(of: "\"", with: "&quot;")
+            .replacingOccurrences(of: "'", with: "&#39;")
+    }
 
-        let centeredOffset = targetCenterY - transcriptTableView.bounds.height / 2
-        let minOffset = -transcriptTableView.adjustedContentInset.top
-        let maxOffset = max(minOffset, transcriptTableView.contentSize.height - transcriptTableView.bounds.height + transcriptTableView.adjustedContentInset.bottom)
-        transcriptTableView.setContentOffset(
-            CGPoint(x: 0, y: min(maxOffset, max(minOffset, centeredOffset))),
-            animated: true
-        )
+    private func normalizeTranscriptDisplayText(_ text: String) -> String {
+        text
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func rebuildChaptersNotes(for episode: EpisodeDTO) {
+        chapterRowViews = []
         chaptersNotesStack.arrangedSubviews.forEach { view in
             chaptersNotesStack.removeArrangedSubview(view)
             view.removeFromSuperview()
@@ -584,8 +665,10 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
         if chapters.isEmpty {
             chaptersNotesStack.addArrangedSubview(panelBody("No chapters yet."))
         } else {
-            chapters.forEach { chapter in
-                chaptersNotesStack.addArrangedSubview(chapterButton(for: chapter, episode: episode))
+            chapters.enumerated().forEach { index, chapter in
+                let row = chapterRow(for: chapter, at: index)
+                chapterRowViews.append(row)
+                chaptersNotesStack.addArrangedSubview(row)
             }
         }
 
@@ -597,6 +680,7 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
         } else {
             chaptersNotesStack.addArrangedSubview(panelBody("No show notes."))
         }
+        updateChapterRowProgress()
     }
 
     private func panelTitle(_ text: String) -> UILabel {
@@ -618,44 +702,47 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
         return label
     }
 
-    private func chapterButton(for chapter: EpisodeChapterDTO, episode: EpisodeDTO) -> UIButton {
-        var configuration = UIButton.Configuration.plain()
-        configuration.title = "\(format(chapter.start))  \(chapter.title)"
-        configuration.image = UIImage(systemName: "play.circle.fill")
-        configuration.imagePadding = 8
-        configuration.baseForegroundColor = .systemOrange
-        configuration.contentInsets = NSDirectionalEdgeInsets(top: 6, leading: 0, bottom: 6, trailing: 0)
-
-        let button = UIButton(type: .system)
-        button.configuration = configuration
-        button.contentHorizontalAlignment = .leading
-        button.titleLabel?.numberOfLines = 0
-        button.addAction(UIAction { [weak self] _ in
+    private func chapterRow(for chapter: EpisodeChapterDTO, at index: Int) -> ChapterProgressRowView {
+        let row = ChapterProgressRowView()
+        row.configure(title: chapter.title, timeText: format(chapter.start))
+        row.addAction(UIAction { [weak self] _ in
             guard let self else { return }
-            FloatingDownloadHUD.shared.show(progressID: episode.stableID, title: episode.title)
-            Task { [weak self] in
-                guard let self else { return }
-                guard let playableEpisode = await LibraryStore.playableDownloadedEpisode(for: episode, in: self.modelContext) else {
-                    self.showDownloadFailed()
-                    return
-                }
-                self.player.play(
-                    playableEpisode,
-                    at: chapter.start,
-                    artworkURL: LibraryStore.cachedChapterImageURL(for: chapter, episode: playableEpisode, in: self.modelContext) ?? chapter.displayImageURL ?? self.currentArtworkURL(for: playableEpisode)
+            self.player.seek(toTime: chapter.start)
+            if let current = self.player.currentEpisode {
+                self.player.updateNowPlayingArtwork(
+                    url: LibraryStore.cachedChapterImageURL(for: chapter, episode: current, in: self.modelContext)
+                        ?? chapter.displayImageURL
+                        ?? self.currentArtworkURL(for: current)
                 )
-                self.player.updateAutoSkipChapters(self.chapters)
             }
         }, for: .touchUpInside)
         let skipState: UIMenuElement.State = ChapterSkipRuleStore.shouldSkip(chapterTitle: chapter.title) ? .on : .off
-        button.menu = UIMenu(children: [
+        row.menu = UIMenu(children: [
             UIAction(title: "Always Skip ‘\(chapter.title)’", image: UIImage(systemName: "forward.end.fill"), state: skipState) { [weak self] _ in
                 ChapterSkipRuleStore.addExactTitle(chapter.title)
                 self?.swipePanelCacheKey = nil
                 self?.update()
             }
         ])
-        return button
+        row.showsMenuAsPrimaryAction = false
+        row.chapterIndex = index
+        return row
+    }
+
+    private func updateChapterRowProgress() {
+        guard !chapterRowViews.isEmpty else { return }
+        let elapsed = player.elapsed
+        for row in chapterRowViews {
+            guard chapters.indices.contains(row.chapterIndex) else { continue }
+            let chapter = chapters[row.chapterIndex]
+            let chapterStart = chapter.start
+            let chapterEnd = chapter.end
+                ?? (chapters.indices.contains(row.chapterIndex + 1) ? chapters[row.chapterIndex + 1].start : (player.duration ?? chapter.start))
+            let duration = max(0.001, chapterEnd - chapterStart)
+            let progress = max(0, min(1, (elapsed - chapterStart) / duration))
+            let isCurrent = elapsed >= chapterStart && elapsed < chapterEnd
+            row.updateProgress(progress, isCurrent: isCurrent)
+        }
     }
 
     private func updateContentMode(animated: Bool) {
@@ -668,30 +755,53 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
         }
         contentContainer.setContentOffset(CGPoint(x: width * page, y: 0), animated: animated)
         if displayMode == .transcript {
+            loadTranscriptIfNeeded()
             applyTranscriptHighlight(scroll: true)
         }
     }
 
     func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
-        guard scrollView === contentContainer else { return }
-        updateDisplayModeForCurrentPage()
+        if scrollView === contentContainer {
+            updateDisplayModeForCurrentPage()
+            return
+        }
+        if scrollView === transcriptWebView.scrollView {
+            transcriptUserScrollLockUntil = Date().addingTimeInterval(4)
+        }
     }
 
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
-        guard scrollView === contentContainer else { return }
-        hasInteractedWithMediaPager = true
+        if scrollView === contentContainer {
+            hasInteractedWithMediaPager = true
+            return
+        }
+        if scrollView === transcriptWebView.scrollView {
+            transcriptUserScrollLockUntil = Date().addingTimeInterval(4)
+        }
     }
 
     func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
-        guard scrollView === contentContainer else { return }
-        if !decelerate {
-            updateDisplayModeForCurrentPage()
+        if scrollView === contentContainer {
+            if !decelerate {
+                updateDisplayModeForCurrentPage()
+            }
+            return
+        }
+        if scrollView === transcriptWebView.scrollView, !decelerate {
+            transcriptUserScrollLockUntil = Date().addingTimeInterval(4)
         }
     }
 
     func scrollViewDidEndScrollingAnimation(_ scrollView: UIScrollView) {
         guard scrollView === contentContainer else { return }
         updateDisplayModeForCurrentPage()
+    }
+
+    func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        if scrollView === transcriptWebView.scrollView,
+           (scrollView.isTracking || scrollView.isDragging || scrollView.isDecelerating) {
+            transcriptUserScrollLockUntil = Date().addingTimeInterval(4)
+        }
     }
 
     private func updateDisplayModeForCurrentPage() {
@@ -703,35 +813,64 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
         default: .artwork
         }
         if displayMode == .transcript {
+            loadTranscriptIfNeeded()
             applyTranscriptHighlight(scroll: true)
         }
     }
 
-    func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
-        transcriptSegments.count
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        guard webView === transcriptWebView else { return }
+        transcriptWebContentLoaded = true
+        applyTranscriptHighlight(scroll: displayMode == .transcript)
     }
 
-    func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-        let cell = tableView.dequeueReusableCell(withIdentifier: NowPlayingTranscriptSegmentCell.reuseIdentifier, for: indexPath) as! NowPlayingTranscriptSegmentCell
-        let segment = transcriptSegments[indexPath.row]
-        cell.configure(
-            time: segment.start.map(format) ?? segment.originalStart.map { "~\(format($0))" },
-            text: segment.text,
-            isCurrent: indexPath.row == currentTranscriptSegmentIndex,
-            isInsertedAudio: segment.isInsertedAudio
-        )
-        return cell
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        guard webView === transcriptWebView else { return }
+        transcriptNeedsReload = true
+        loadTranscriptIfNeeded(force: true)
     }
 
-    func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
-        tableView.deselectRow(at: indexPath, animated: true)
-        guard transcriptSegments.indices.contains(indexPath.row),
-              !transcriptSegments[indexPath.row].isInsertedAudio,
-              let start = transcriptSegments[indexPath.row].start else { return }
-        let previousIndex = currentTranscriptSegmentIndex
-        currentTranscriptSegmentIndex = indexPath.row
-        applyTranscriptHighlight(previousIndex: previousIndex, scroll: false)
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard message.name == "seekSegment",
+              let index = message.body as? Int,
+              transcriptSegments.indices.contains(index),
+              !transcriptSegments[index].isInsertedAudio,
+              let start = transcriptSegments[index].start else { return }
+        currentTranscriptSegmentIndex = index
+        applyTranscriptHighlight(scroll: false)
         player.seek(toTime: start)
+    }
+
+    @MainActor
+    func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void) {
+        guard webView === transcriptWebView, let url = navigationAction.request.url else {
+            decisionHandler(.allow)
+            return
+        }
+        let scheme = url.scheme ?? ""
+        if scheme == "about" || scheme == "data" || scheme == "blob" {
+            decisionHandler(.allow)
+            return
+        }
+        // Allow normal internal/document navigations. External loads remain blocked.
+        if navigationAction.navigationType == .other,
+           navigationAction.targetFrame?.isMainFrame != false {
+            decisionHandler(.allow)
+            return
+        }
+        guard scheme == "podcatcher",
+              url.host == "segment",
+              let index = Int(url.lastPathComponent),
+              transcriptSegments.indices.contains(index),
+              !transcriptSegments[index].isInsertedAudio,
+              let start = transcriptSegments[index].start else {
+            decisionHandler(.cancel)
+            return
+        }
+        currentTranscriptSegmentIndex = index
+        applyTranscriptHighlight(scroll: false)
+        player.seek(toTime: start)
+        decisionHandler(.cancel)
     }
 
     private func makeMenu() -> UIMenu {
@@ -949,12 +1088,26 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
     }
 
     @objc private func showSleepTimer() {
-        let alert = UIAlertController(title: "Sleep Timer", message: nil, preferredStyle: .actionSheet)
-        ["15 minutes", "30 minutes", "45 minutes", "End of Episode"].forEach { title in
-            alert.addAction(UIAlertAction(title: title, style: .default))
+        let controller = SleepTimerViewController(player: player)
+        controller.modalPresentationStyle = .pageSheet
+        if let sheet = controller.sheetPresentationController {
+            sheet.detents = [.medium()]
+            sheet.prefersGrabberVisible = true
+            sheet.preferredCornerRadius = 28
         }
-        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-        present(alert, animated: true)
+        present(controller, animated: true)
+    }
+
+    private func handleSleepTimerIfNeeded() {
+        guard let state = SleepTimerState.shared.state else { return }
+        if state.mode == .endOfEpisode, remaining <= 0.75 {
+            player.pauseForSleepTimer()
+            SleepTimerState.shared.clear()
+        }
+    }
+
+    private func updateSleepTimerUI() {
+        // Hook for future icon state updates in now playing controls.
     }
 
     private func showAddChapterSkipRegex() {
@@ -985,13 +1138,8 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
     }
 
     private func showDownloadFailed() {
-        let alert = UIAlertController(
-            title: "Download Failed",
-            message: "The episode audio could not be saved for playback. Try again on a stable connection.",
-            preferredStyle: .alert
-        )
-        alert.addAction(UIAlertAction(title: "OK", style: .default))
-        present(alert, animated: true)
+        guard let episode = player.currentEpisode else { return }
+        FloatingDownloadHUD.shared.showFailure(progressID: episode.stableID, title: episode.title)
     }
 
     @objc private func showTranscriptPanel() {
@@ -1054,52 +1202,60 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
 
 }
 
-private final class NowPlayingTranscriptSegmentCell: UITableViewCell {
-    static let reuseIdentifier = "NowPlayingTranscriptSegmentCell"
+private final class ChapterProgressRowView: UIButton {
+    var chapterIndex: Int = 0
 
+    private let fillView = UIView()
+    private let fillWidthConstraint: NSLayoutConstraint
     private let timeLabel = UILabel()
-    private let transcriptLabel = UILabel()
-    private let container = UIView()
+    private let titleLabelView = UILabel()
+    private var backgroundLeadingConstraint: NSLayoutConstraint?
+    private var cachedBoundsWidth: CGFloat = 0
 
-    override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
-        super.init(style: style, reuseIdentifier: reuseIdentifier)
-        backgroundColor = .clear
-        selectedBackgroundView = UIView()
-        selectedBackgroundView?.backgroundColor = UIColor.systemOrange.withAlphaComponent(0.12)
+    override init(frame: CGRect) {
+        fillWidthConstraint = fillView.widthAnchor.constraint(equalToConstant: 0)
+        super.init(frame: frame)
+        translatesAutoresizingMaskIntoConstraints = false
+        layer.cornerRadius = 10
+        clipsToBounds = true
+        backgroundColor = UIColor.white.withAlphaComponent(0.05)
+        layer.borderWidth = 1
+        layer.borderColor = UIColor.white.withAlphaComponent(0.1).cgColor
+        contentHorizontalAlignment = .leading
 
-        container.translatesAutoresizingMaskIntoConstraints = false
-        container.layer.cornerRadius = 12
-        container.clipsToBounds = true
+        fillView.translatesAutoresizingMaskIntoConstraints = false
+        fillView.backgroundColor = UIColor.systemOrange.withAlphaComponent(0.32)
+        addSubview(fillView)
 
-        timeLabel.font = .monospacedDigitSystemFont(ofSize: 13, weight: .semibold)
-        timeLabel.textColor = .tertiaryLabel
-        timeLabel.setContentHuggingPriority(.required, for: .horizontal)
+        timeLabel.translatesAutoresizingMaskIntoConstraints = false
+        timeLabel.font = .monospacedDigitSystemFont(ofSize: 12, weight: .semibold)
+        timeLabel.textColor = UIColor.white.withAlphaComponent(0.76)
         timeLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
 
-        transcriptLabel.font = .preferredFont(forTextStyle: .title3)
-        transcriptLabel.adjustsFontForContentSizeCategory = true
-        transcriptLabel.numberOfLines = 0
-        transcriptLabel.textColor = .secondaryLabel
+        titleLabelView.translatesAutoresizingMaskIntoConstraints = false
+        titleLabelView.font = .preferredFont(forTextStyle: .subheadline)
+        titleLabelView.adjustsFontForContentSizeCategory = true
+        titleLabelView.textColor = UIColor.white.withAlphaComponent(0.95)
+        titleLabelView.numberOfLines = 2
 
-        let row = UIStackView(arrangedSubviews: [timeLabel, transcriptLabel])
-        row.translatesAutoresizingMaskIntoConstraints = false
-        row.axis = .horizontal
-        row.alignment = .firstBaseline
-        row.spacing = 10
+        let stack = UIStackView(arrangedSubviews: [timeLabel, titleLabelView])
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        stack.axis = .horizontal
+        stack.spacing = 10
+        stack.alignment = .center
+        addSubview(stack)
 
-        contentView.addSubview(container)
-        container.addSubview(row)
         NSLayoutConstraint.activate([
-            container.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 10),
-            container.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -10),
-            container.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 4),
-            container.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -4),
+            fillView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            fillView.topAnchor.constraint(equalTo: topAnchor),
+            fillView.bottomAnchor.constraint(equalTo: bottomAnchor),
+            fillWidthConstraint,
 
-            row.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 10),
-            row.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -10),
-            row.topAnchor.constraint(equalTo: container.topAnchor, constant: 10),
-            row.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -10),
-            timeLabel.widthAnchor.constraint(equalToConstant: 48)
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
+            stack.topAnchor.constraint(equalTo: topAnchor, constant: 10),
+            stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -10),
+            heightAnchor.constraint(greaterThanOrEqualToConstant: 44)
         ])
     }
 
@@ -1107,17 +1263,28 @@ private final class NowPlayingTranscriptSegmentCell: UITableViewCell {
         fatalError("init(coder:) has not been implemented")
     }
 
-    func configure(time: String?, text: String, isCurrent: Bool, isInsertedAudio: Bool = false) {
-        timeLabel.text = time ?? "--:--"
-        transcriptLabel.text = isInsertedAudio ? "Inserted audio / not in transcript\n\(text)" : text
-        container.backgroundColor = isCurrent ? UIColor.systemOrange.withAlphaComponent(0.22) : (isInsertedAudio ? UIColor.systemPurple.withAlphaComponent(0.12) : .clear)
-        timeLabel.textColor = isCurrent ? .systemOrange : (isInsertedAudio ? .systemPurple : .tertiaryLabel)
-        transcriptLabel.textColor = isCurrent ? .label : (isInsertedAudio ? .systemPurple : .secondaryLabel)
-        transcriptLabel.font = .preferredFont(forTextStyle: .title3)
-        selectionStyle = isInsertedAudio ? .none : .default
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        if bounds.width != cachedBoundsWidth {
+            cachedBoundsWidth = bounds.width
+            fillWidthConstraint.constant = fillWidthConstraint.constant
+        }
+    }
+
+    func configure(title: String, timeText: String) {
+        titleLabelView.text = title
+        timeLabel.text = timeText
+    }
+
+    func updateProgress(_ progress: Double, isCurrent: Bool) {
+        let clamped = max(0, min(1, progress))
+        fillWidthConstraint.constant = bounds.width * clamped
+        layer.borderColor = (isCurrent ? UIColor.systemOrange.withAlphaComponent(0.65) : UIColor.white.withAlphaComponent(0.1)).cgColor
+        UIView.animate(withDuration: 0.2) {
+            self.layoutIfNeeded()
+        }
     }
 }
-
 private final class AudioSettingsViewController: UIViewController {
     private let player: PlayerController
     private let subscription: PodcastSubscription?
@@ -1276,8 +1443,140 @@ private final class AudioSettingsViewController: UIViewController {
 
     @objc private func customChanged() {
         customForPodcast = customSwitch.isOn
+        if !customForPodcast {
+            speed = PlaybackSettings.globalSpeed
+        }
         PlaybackSettings.setUsesCustomSpeed(customForPodcast, for: subscription, currentSpeed: speed)
         updateSpeed()
+    }
+}
+
+private final class SleepTimerViewController: UIViewController {
+    private let player: PlayerController
+    private let statusLabel = UILabel()
+    private let progressView = UIProgressView(progressViewStyle: .default)
+    private var ticker: Timer?
+
+    init(player: PlayerController) {
+        self.player = player
+        super.init(nibName: nil, bundle: nil)
+        title = "Sleep Timer"
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = .secondarySystemBackground
+        configureUI()
+        refreshStatus()
+        ticker = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            self?.refreshStatus()
+        }
+    }
+
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        ticker?.invalidate()
+        ticker = nil
+    }
+
+    private func configureUI() {
+        let fifteen = timerButton("15 Minutes") { SleepTimerState.shared.start(minutes: 15) }
+        let thirty = timerButton("30 Minutes") { SleepTimerState.shared.start(minutes: 30) }
+        let fortyFive = timerButton("45 Minutes") { SleepTimerState.shared.start(minutes: 45) }
+        let endOfEpisode = timerButton("End of Episode") { SleepTimerState.shared.startEndOfEpisode() }
+        let clear = timerButton("Turn Off") { SleepTimerState.shared.clear() }
+        clear.configuration?.baseBackgroundColor = .systemRed.withAlphaComponent(0.2)
+        clear.configuration?.baseForegroundColor = .systemRed
+
+        statusLabel.font = .preferredFont(forTextStyle: .subheadline)
+        statusLabel.textColor = .secondaryLabel
+        statusLabel.numberOfLines = 0
+        progressView.progressTintColor = .systemOrange
+
+        let stack = UIStackView(arrangedSubviews: [statusLabel, progressView, fifteen, thirty, fortyFive, endOfEpisode, clear])
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        stack.axis = .vertical
+        stack.spacing = 12
+        view.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
+            stack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
+            stack.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 20)
+        ])
+    }
+
+    private func timerButton(_ title: String, action: @escaping () -> Void) -> UIButton {
+        var config = UIButton.Configuration.filled()
+        config.title = title
+        config.cornerStyle = .large
+        config.baseBackgroundColor = .systemOrange.withAlphaComponent(0.2)
+        config.baseForegroundColor = .systemOrange
+        let button = UIButton(type: .system)
+        button.configuration = config
+        button.addAction(UIAction { _ in action() }, for: .touchUpInside)
+        return button
+    }
+
+    private func refreshStatus() {
+        guard let state = SleepTimerState.shared.state else {
+            statusLabel.text = "No active sleep timer"
+            progressView.progress = 0
+            return
+        }
+
+        switch state.mode {
+        case .fixedDuration:
+            let remaining = max(0, state.endDate.timeIntervalSinceNow)
+            let progress = max(0, min(1, 1 - (remaining / state.duration)))
+            statusLabel.text = "Running: \(Int(remaining / 60))m \(Int(remaining) % 60)s remaining"
+            progressView.progress = Float(progress)
+            if remaining <= 0.5 {
+                player.pauseForSleepTimer()
+                SleepTimerState.shared.clear()
+            }
+        case .endOfEpisode:
+            statusLabel.text = "Running: ends when this episode finishes"
+            let duration = max(player.duration ?? 0, 0)
+            let progress = duration > 0 ? min(1, max(0, player.elapsed / duration)) : 0
+            progressView.progress = Float(progress)
+        }
+    }
+}
+
+@MainActor
+private final class SleepTimerState: ObservableObject {
+    enum Mode {
+        case fixedDuration
+        case endOfEpisode
+    }
+
+    struct State {
+        let mode: Mode
+        let startedAt: Date
+        let endDate: Date
+        let duration: TimeInterval
+    }
+
+    static let shared = SleepTimerState()
+    @Published private(set) var state: State?
+
+    func start(minutes: Double) {
+        let duration = minutes * 60
+        let now = Date()
+        state = State(mode: .fixedDuration, startedAt: now, endDate: now.addingTimeInterval(duration), duration: duration)
+    }
+
+    func startEndOfEpisode() {
+        let now = Date()
+        state = State(mode: .endOfEpisode, startedAt: now, endDate: now, duration: 1)
+    }
+
+    func clear() {
+        state = nil
     }
 }
 

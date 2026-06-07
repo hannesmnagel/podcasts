@@ -162,9 +162,10 @@ struct ArtifactController: RouteCollection {
 
     func uploadTranscript(req: Request) async throws -> TranscriptArtifact {
         let episode = try await findEpisode(req)
+        let episodeID = try episode.requireID()
         let input = try req.content.decode(TranscriptUpload.self)
         let artifact = TranscriptArtifact()
-        artifact.$episode.id = try episode.requireID()
+        artifact.$episode.id = episodeID
         artifact.renditionID = input.renditionID
         artifact.locale = input.locale
         artifact.model = input.model
@@ -173,7 +174,16 @@ struct ArtifactController: RouteCollection {
         artifact.textHash = input.textHash
         try await artifact.save(on: req.db)
         if let fingerprint = input.fingerprint {
-            _ = try await saveFingerprint(fingerprint, episodeID: episode.requireID(), on: req.db)
+            _ = try await saveFingerprint(fingerprint, episodeID: episodeID, on: req.db)
+        }
+        // Proactively queue chapter generation if the transcript is alignment-ready and no chapters exist yet
+        if chaptersEnabled,
+           artifact.segmentFingerprintsJSON?.isEmpty == false,
+           !(try await artifactExists(episodeID: episodeID, kind: "chapters", on: req.db)) {
+            let demand = try await ArtifactRequest.query(on: req.db).filter(\.$episode.$id == episodeID).first()
+            let podcastDemand = try await PodcastDemand.query(on: req.db).filter(\.$podcast.$id == episode.$podcast.id).first()
+            let priority = (demand?.chapterCount ?? 0) * 2 + (podcastDemand?.priorityScore ?? 0)
+            try await ensureWorkerJob(episodeID: episodeID, kind: "chapters", priority: priority, on: req.db)
         }
         return artifact
     }

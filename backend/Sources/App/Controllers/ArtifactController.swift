@@ -176,13 +176,15 @@ struct ArtifactController: RouteCollection {
         if let fingerprint = input.fingerprint {
             _ = try await saveFingerprint(fingerprint, episodeID: episodeID, on: req.db)
         }
-        // Proactively queue chapter generation if the transcript is alignment-ready and no chapters exist yet
+        // Proactively queue chapter generation if someone has downloaded this episode,
+        // the transcript is alignment-ready, and no chapters exist yet.
+        let demand = try await ArtifactRequest.query(on: req.db).filter(\.$episode.$id == episodeID).first()
         if chaptersEnabled,
+           let demand, demand.chapterCount > 0,
            artifact.segmentFingerprintsJSON?.isEmpty == false,
            !(try await artifactExists(episodeID: episodeID, kind: "chapters", on: req.db)) {
-            let demand = try await ArtifactRequest.query(on: req.db).filter(\.$episode.$id == episodeID).first()
             let podcastDemand = try await PodcastDemand.query(on: req.db).filter(\.$podcast.$id == episode.$podcast.id).first()
-            let priority = (demand?.chapterCount ?? 0) * 2 + (podcastDemand?.priorityScore ?? 0)
+            let priority = demand.chapterCount * 2 + (podcastDemand?.priorityScore ?? 0)
             try await ensureWorkerJob(episodeID: episodeID, kind: "chapters", priority: priority, on: req.db)
         }
         return artifact

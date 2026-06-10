@@ -134,7 +134,8 @@ struct WorkerController: RouteCollection {
     }
 
     func resetFailed(req: Request) async throws -> ResetFailedResponse {
-        let count = try await WorkerJob.query(on: req.db)
+        // Reset permanently-failed jobs
+        let failedCount = try await WorkerJob.query(on: req.db)
             .filter(\.$status == "failed")
             .count()
         try await WorkerJob.query(on: req.db)
@@ -145,7 +146,18 @@ struct WorkerController: RouteCollection {
             .set(\.$claimedAt, to: nil)
             .set(\.$nextAttemptAt, to: nil)
             .update()
-        return ResetFailedResponse(reset: count)
+        // Also clear backoff on pending jobs stuck in retry delay
+        let backoffCount = try await WorkerJob.query(on: req.db)
+            .filter(\.$status == "pending")
+            .filter(\.$nextAttemptAt != nil)
+            .count()
+        try await WorkerJob.query(on: req.db)
+            .filter(\.$status == "pending")
+            .filter(\.$nextAttemptAt != nil)
+            .set(\.$retryCount, to: 0)
+            .set(\.$nextAttemptAt, to: nil)
+            .update()
+        return ResetFailedResponse(reset: failedCount + backoffCount)
     }
 
     private func nextPendingJob(kinds: [String]?, on db: any Database) async throws -> WorkerJob? {

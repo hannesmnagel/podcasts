@@ -464,6 +464,7 @@ struct WhisperRunner {
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         var args = [command, audioFile.path, "--output-format", "json", "--output-dir", outputDirectory.path]
         if !model.isEmpty { args += ["--model", model] }
+        args += ["--condition-on-previous-text", "False"]
         process.arguments = args
         var env = ProcessInfo.processInfo.environment
         env["PYTHONUNBUFFERED"] = "1"

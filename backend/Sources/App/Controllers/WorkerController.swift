@@ -18,6 +18,7 @@ struct WorkerController: RouteCollection {
         workers.post("jobs", "claim", use: claim)
         workers.post("jobs", ":id", "complete", use: complete)
         workers.post("jobs", ":id", "fail", use: fail)
+        workers.post("jobs", "reset-failed", use: resetFailed)
     }
 
     func claim(req: Request) async throws -> ClaimedWorkerJobResponse {
@@ -130,6 +131,21 @@ struct WorkerController: RouteCollection {
         }
         try await job.save(on: req.db)
         return try ClaimedWorkerJobResponse(job: job)
+    }
+
+    func resetFailed(req: Request) async throws -> ResetFailedResponse {
+        let count = try await WorkerJob.query(on: req.db)
+            .filter(\.$status == "failed")
+            .count()
+        try await WorkerJob.query(on: req.db)
+            .filter(\.$status == "failed")
+            .set(\.$status, to: "pending")
+            .set(\.$retryCount, to: 0)
+            .set(\.$claimedBy, to: nil)
+            .set(\.$claimedAt, to: nil)
+            .set(\.$nextAttemptAt, to: nil)
+            .update()
+        return ResetFailedResponse(reset: count)
     }
 
     private func nextPendingJob(kinds: [String]?, on db: any Database) async throws -> WorkerJob? {
@@ -348,6 +364,10 @@ private struct JobSortKey: Comparable {
         if lhs.createdAt != rhs.createdAt { return lhs.createdAt < rhs.createdAt }
         return lhs.id.uuidString < rhs.id.uuidString
     }
+}
+
+struct ResetFailedResponse: Content {
+    let reset: Int
 }
 
 struct ClaimJobRequest: Content {

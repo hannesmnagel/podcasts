@@ -107,9 +107,16 @@ struct BackendClient: Sendable {
         return all
     }
 
-    func search(_ query: String) async throws -> EpisodeSearchDTO {
+    /// Searches episodes. When `podcastID` (a podcast stableID) is provided, the
+    /// search is scoped to that single show's episodes.
+    func search(_ query: String, podcastID: String? = nil) async throws -> EpisodeSearchDTO {
         let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? query
-        return try await get("episodes/search?q=\(encoded)")
+        var path = "episodes/search?q=\(encoded)"
+        if let podcastID, !podcastID.isEmpty {
+            let encodedID = podcastID.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? podcastID
+            path += "&podcastID=\(encodedID)"
+        }
+        return try await get(path)
     }
 
     /// Podcasts ranked by listener demand, for the empty-query "Popular" section.

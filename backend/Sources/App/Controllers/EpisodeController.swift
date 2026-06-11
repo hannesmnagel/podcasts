@@ -23,6 +23,17 @@ struct EpisodeController: RouteCollection {
     func search(req: Request) async throws -> EpisodeSearchResponse {
         let q = (try? req.query.get(String.self, at: "q"))?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !q.isEmpty else { return EpisodeSearchResponse(podcasts: [], episodes: [], directory: []) }
+        let rawScope = (try? req.query.get(String.self, at: "podcastID"))?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let scopePodcastID = (rawScope?.isEmpty == false) ? rawScope : nil
+
+        let episodes = try await EpisodeSearchService().search(term: q, limit: 50, podcastStableID: scopePodcastID, on: req.db)
+
+        // When scoped to a single show, only episodes are relevant — skip the
+        // podcast catalog and directory lookups entirely.
+        if scopePodcastID != nil {
+            return EpisodeSearchResponse(podcasts: [], episodes: episodes, directory: [])
+        }
+
         let podcasts = try await Podcast.query(on: req.db)
             .group(.or) { group in
                 group.filter(\.$title ~~ q)
@@ -31,7 +42,6 @@ struct EpisodeController: RouteCollection {
             .limit(25)
             .all()
             .map(PodcastResponse.init)
-        let episodes = try await EpisodeSearchService().search(term: q, limit: 50, on: req.db)
         let directory = try await PodcastDirectorySearch().search(term: q, on: req.application)
         return EpisodeSearchResponse(podcasts: podcasts, episodes: episodes, directory: directory)
     }

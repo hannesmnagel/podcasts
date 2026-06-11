@@ -62,7 +62,7 @@ final class BackendTests: XCTestCase {
         }
 
         try await app.test(.POST, "worker/jobs/claim", beforeRequest: { req in
-            try req.content.encode(ClaimJobRequest(workerID: "test-worker"))
+            try req.content.encode(ClaimJobRequest(workerID: "test-worker", kinds: nil))
         }, afterResponse: { res async throws in
             XCTAssertEqual(res.status, .ok)
             let job = try res.content.decode(ClaimedWorkerJobResponse.self)
@@ -224,7 +224,7 @@ final class BackendTests: XCTestCase {
         try await hotDemand.save(on: app.db)
 
         try await app.test(.POST, "worker/jobs/claim", beforeRequest: { req in
-            try req.content.encode(ClaimJobRequest(workerID: "test-worker"))
+            try req.content.encode(ClaimJobRequest(workerID: "test-worker", kinds: nil))
         }, afterResponse: { res async throws in
             XCTAssertEqual(res.status, .ok)
             let job = try res.content.decode(ClaimedWorkerJobResponse.self)
@@ -246,7 +246,7 @@ final class BackendTests: XCTestCase {
         try await job.save(on: app.db)
 
         try await app.test(.POST, "worker/jobs/claim", beforeRequest: { req in
-            try req.content.encode(ClaimJobRequest(workerID: "test-worker"))
+            try req.content.encode(ClaimJobRequest(workerID: "test-worker", kinds: nil))
         }, afterResponse: { res async throws in
             XCTAssertEqual(res.status, .ok)
         })
@@ -263,7 +263,7 @@ final class BackendTests: XCTestCase {
         XCTAssertEqual(failedJob.status, "failed")
 
         try await app.test(.POST, "worker/jobs/claim", beforeRequest: { req in
-            try req.content.encode(ClaimJobRequest(workerID: "test-worker"))
+            try req.content.encode(ClaimJobRequest(workerID: "test-worker", kinds: nil))
         }, afterResponse: { res async throws in
             XCTAssertEqual(res.status, .noContent)
         })
@@ -300,10 +300,10 @@ final class BackendTests: XCTestCase {
 
         let controller = QueueMonitorController()
         let snapshot = try await controller.snapshot(on: app.db)
-        XCTAssertEqual(snapshot.totalJobs, 2)
+        XCTAssertEqual(snapshot.totalJobsCount, 2)
         XCTAssertEqual(snapshot.pendingJobs.count, 1)
         XCTAssertEqual(snapshot.claimedJobs.count, 1)
-        XCTAssertEqual(snapshot.staleClaimedJobs.count, 1)
+        XCTAssertEqual(snapshot.staleClaimedJobsCount, 1)
 
         let html = QueueMonitorController.renderHTML(snapshot: snapshot)
         XCTAssertTrue(html.contains("Queue Monitor"))
@@ -343,16 +343,28 @@ final class BackendTests: XCTestCase {
         try await secondJob.save(on: app.db)
 
         try await app.test(.POST, "worker/jobs/claim", beforeRequest: { req in
-            try req.content.encode(ClaimJobRequest(workerID: "test-worker"))
+            try req.content.encode(ClaimJobRequest(workerID: "test-worker", kinds: nil))
         }, afterResponse: { res async throws in
             XCTAssertEqual(res.status, .ok)
+            let job = try res.content.decode(ClaimedWorkerJobResponse.self)
+            XCTAssertEqual(job.episode.stableID, "episode-1")
         })
 
+        // A second claim by the same worker resumes its existing transcript claim
+        // rather than handing out a second transcript job, so the lower-priority
+        // episode-2 stays pending.
         try await app.test(.POST, "worker/jobs/claim", beforeRequest: { req in
-            try req.content.encode(ClaimJobRequest(workerID: "test-worker"))
+            try req.content.encode(ClaimJobRequest(workerID: "test-worker", kinds: nil))
         }, afterResponse: { res async throws in
-            XCTAssertEqual(res.status, .noContent)
+            XCTAssertEqual(res.status, .ok)
+            let job = try res.content.decode(ClaimedWorkerJobResponse.self)
+            XCTAssertEqual(job.episode.stableID, "episode-1")
         })
+
+        let secondJobState = try await WorkerJob.query(on: app.db)
+            .filter(\.$episode.$id == secondEpisode.requireID())
+            .first()
+        XCTAssertEqual(secondJobState?.status, "pending")
     }
 
     func testWorkerPriorityTiersPreferNewRequestedThenNewHotPodcastThenOldRequested() async throws {
@@ -396,7 +408,7 @@ final class BackendTests: XCTestCase {
         try await j3.save(on: app.db)
 
         try await app.test(.POST, "worker/jobs/claim", beforeRequest: { req in
-            try req.content.encode(ClaimJobRequest(workerID: "worker-a"))
+            try req.content.encode(ClaimJobRequest(workerID: "worker-a", kinds: nil))
         }, afterResponse: { res async throws in
             XCTAssertEqual(res.status, .ok)
             let job = try res.content.decode(ClaimedWorkerJobResponse.self)
@@ -408,7 +420,7 @@ final class BackendTests: XCTestCase {
         try await j1.save(on: app.db)
 
         try await app.test(.POST, "worker/jobs/claim", beforeRequest: { req in
-            try req.content.encode(ClaimJobRequest(workerID: "worker-b"))
+            try req.content.encode(ClaimJobRequest(workerID: "worker-b", kinds: nil))
         }, afterResponse: { res async throws in
             XCTAssertEqual(res.status, .ok)
             let job = try res.content.decode(ClaimedWorkerJobResponse.self)
@@ -438,12 +450,15 @@ final class BackendTests: XCTestCase {
         let pending = WorkerJob(episodeID: try freshEpisode.requireID(), kind: "transcript", priority: 90)
         try await pending.save(on: app.db)
 
+        // The worker's own stale claim no longer blocks it: the claim request
+        // reaps the timed-out claim back to pending, then hands out the
+        // highest-priority pending transcript job (stale-episode, priority 100).
         try await app.test(.POST, "worker/jobs/claim", beforeRequest: { req in
-            try req.content.encode(ClaimJobRequest(workerID: "test-worker"))
+            try req.content.encode(ClaimJobRequest(workerID: "test-worker", kinds: nil))
         }, afterResponse: { res async throws in
             XCTAssertEqual(res.status, .ok)
             let job = try res.content.decode(ClaimedWorkerJobResponse.self)
-            XCTAssertEqual(job.episode.stableID, "fresh-episode")
+            XCTAssertEqual(job.episode.stableID, "stale-episode")
         })
     }
 
@@ -470,7 +485,7 @@ final class BackendTests: XCTestCase {
         try await pending.save(on: app.db)
 
         try await app.test(.POST, "worker/jobs/claim", beforeRequest: { req in
-            try req.content.encode(ClaimJobRequest(workerID: "test-worker"))
+            try req.content.encode(ClaimJobRequest(workerID: "test-worker", kinds: nil))
         }, afterResponse: { res async throws in
             XCTAssertEqual(res.status, .ok)
             let job = try res.content.decode(ClaimedWorkerJobResponse.self)

@@ -30,6 +30,10 @@ class EpisodeListViewController: UITableViewController {
     private var hasDownloadButtonInNavigation = false
     private var isLoading = false
     private var isWaitingForInitialCrawl = false
+    // In-podcast scoped search (only used in `.podcast` mode).
+    private var inPodcastSearchQuery = ""
+    private var inPodcastSearchTask: Task<Void, Never>?
+    private var inPodcastServerHits: [String: EpisodeDTO] = [:]
 
     init(title: String, mode: EpisodeListMode, modelContext: ModelContext, player: PlayerController) {
         self.mode = mode
@@ -60,6 +64,7 @@ class EpisodeListViewController: UITableViewController {
         tableView.dropDelegate = self
         tableView.dragInteractionEnabled = true
         configureNavigationItems()
+        setupInPodcastSearchIfNeeded()
         bindDownloadProgressNavigationItem()
         bindPlayerState()
         configurePodcastHeaderIfNeeded()
@@ -108,8 +113,29 @@ class EpisodeListViewController: UITableViewController {
             dimsPlayed: showsPlayedEpisodes,
             isCurrentPlaying: isCurrentPlaying
         )
+        if !inPodcastSearchQuery.isEmpty {
+            applyInPodcastHighlight(to: cell, for: episode)
+        }
         cell.playTapped = { [weak self] in self?.play(episode) }
         return cell
+    }
+
+    private func applyInPodcastHighlight(to cell: EpisodeCell, for episode: EpisodeDTO) {
+        let font = UIFont.preferredFont(forTextStyle: .subheadline)
+        let serverHit = inPodcastServerHits[episode.stableID]
+        if let marked = serverHit?.matchSnippet, !marked.isEmpty {
+            cell.applySearchHighlight(snippet: SearchHighlighter.attributed(markedSnippet: marked, font: font), matchField: serverHit?.matchField, date: episode.publishedAt)
+            return
+        }
+        let folded = SearchIntelligence.fold(inPodcastSearchQuery)
+        if SearchIntelligence.fold(episode.title).contains(folded) {
+            cell.applySearchHighlight(snippet: nil, matchField: "title", date: episode.publishedAt)
+        } else if let summary = episode.summary,
+                  let snippet = SearchHighlighter.attributed(text: summary, matching: inPodcastSearchQuery, font: font) {
+            cell.applySearchHighlight(snippet: snippet, matchField: "summary", date: episode.publishedAt)
+        } else if let field = serverHit?.matchField {
+            cell.applySearchHighlight(snippet: nil, matchField: field, date: episode.publishedAt)
+        }
     }
 
     override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
@@ -490,7 +516,28 @@ class EpisodeListViewController: UITableViewController {
     }
 
     func refreshVisibleEpisodeSnapshot() {
-        visibleEpisodeSnapshot = episodes.filter { !deletedEpisodeIDs.contains($0.stableID) && (showsPlayedEpisodes || !playedEpisodeIDs.contains($0.stableID)) }
+        var snapshot = episodes.filter { !deletedEpisodeIDs.contains($0.stableID) && (showsPlayedEpisodes || !playedEpisodeIDs.contains($0.stableID)) }
+        if !inPodcastSearchQuery.isEmpty {
+            snapshot = filterAndRankForInPodcastSearch(snapshot)
+        }
+        visibleEpisodeSnapshot = snapshot
+    }
+
+    private func filterAndRankForInPodcastSearch(_ episodes: [EpisodeDTO]) -> [EpisodeDTO] {
+        let folded = SearchIntelligence.fold(inPodcastSearchQuery)
+        func rank(_ episode: EpisodeDTO) -> Int {
+            if SearchIntelligence.fold(episode.title).contains(folded) { return 3 }
+            if let summary = episode.summary, SearchIntelligence.fold(summary).contains(folded) { return 2 }
+            if inPodcastServerHits[episode.stableID] != nil { return 1 }
+            return 0
+        }
+        return episodes
+            .filter { rank($0) > 0 }
+            .sorted {
+                let lhs = rank($0), rhs = rank($1)
+                if lhs != rhs { return lhs > rhs }
+                return ($0.publishedAt ?? .distantPast) > ($1.publishedAt ?? .distantPast)
+            }
     }
 
     private func play(_ episode: EpisodeDTO) {
@@ -816,10 +863,69 @@ class EpisodeListViewController: UITableViewController {
     }
 
     private var emptyText: String {
+        if !inPodcastSearchQuery.isEmpty {
+            return "No episodes in this show match “\(inPodcastSearchQuery)”."
+        }
         switch mode {
-        case .placeholder: "This smart playlist is not wired yet."
-        case .subscriptions(let ids) where ids.isEmpty: "Search for podcasts and add them to your library."
-        default: "No crawled episodes yet."
+        case .placeholder: return "This smart playlist is not wired yet."
+        case .subscriptions(let ids) where ids.isEmpty: return "Search for podcasts and add them to your library."
+        default: return "No crawled episodes yet."
+        }
+    }
+
+    // MARK: - In-podcast scoped search
+
+    private func setupInPodcastSearchIfNeeded() {
+        guard case .podcast = mode else { return }
+        let searchController = UISearchController(searchResultsController: nil)
+        searchController.searchResultsUpdater = self
+        searchController.obscuresBackgroundDuringPresentation = false
+        searchController.searchBar.placeholder = "Search this show (incl. transcripts)"
+        navigationItem.searchController = searchController
+        navigationItem.hidesSearchBarWhenScrolling = true
+    }
+
+    private func runScopedSearch(_ trimmed: String) async {
+        guard case .podcast(let podcastID) = mode else { return }
+        guard let result = try? await client.search(trimmed, podcastID: podcastID) else { return }
+        guard trimmed == inPodcastSearchQuery else { return }
+        await libraryStoreActor.cacheEpisodes(result.episodes)
+        inPodcastServerHits = Dictionary(result.episodes.map { ($0.stableID, $0) }, uniquingKeysWith: { first, _ in first })
+        // The server may surface transcript-only episodes that aren't yet in the
+        // locally loaded list; merge them so they can appear in results.
+        let knownIDs = Set(episodes.map(\.stableID))
+        let extras = result.episodes.filter { !knownIDs.contains($0.stableID) }
+        if !extras.isEmpty { episodes.append(contentsOf: extras) }
+        guard trimmed == inPodcastSearchQuery else { return }
+        refreshVisibleEpisodeSnapshot()
+        tableView.reloadData()
+        updateEmptyState()
+    }
+}
+
+extension EpisodeListViewController: UISearchResultsUpdating {
+    func updateSearchResults(for searchController: UISearchController) {
+        let trimmed = (searchController.searchBar.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed != inPodcastSearchQuery else { return }
+        inPodcastSearchQuery = trimmed
+        inPodcastSearchTask?.cancel()
+
+        if trimmed.isEmpty {
+            inPodcastServerHits = [:]
+            refreshVisibleEpisodeSnapshot()
+            tableView.reloadData()
+            updateEmptyState()
+            return
+        }
+
+        // Instant local filter (title/description) while the network runs.
+        refreshVisibleEpisodeSnapshot()
+        tableView.reloadData()
+
+        inPodcastSearchTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(300))
+            guard !Task.isCancelled, let self else { return }
+            await self.runScopedSearch(trimmed)
         }
     }
 }

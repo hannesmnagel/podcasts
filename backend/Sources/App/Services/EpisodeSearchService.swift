@@ -13,14 +13,16 @@ struct EpisodeSearchService: Sendable {
     static let highlightStart = "\u{00AB}" // «
     static let highlightEnd = "\u{00BB}"   // »
 
-    func search(term: String, limit: Int, on db: any Database) async throws -> [EpisodeResponse] {
+    /// - Parameter podcastStableID: when non-nil, restricts results to a single
+    ///   podcast's episodes (scoped "search within this show").
+    func search(term: String, limit: Int, podcastStableID: String? = nil, on db: any Database) async throws -> [EpisodeResponse] {
         let trimmed = term.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return [] }
 
         if let sql = db as? any SQLDatabase, sql.dialect.name == "postgresql" {
-            return try await postgresSearch(term: trimmed, limit: limit, on: sql)
+            return try await postgresSearch(term: trimmed, limit: limit, podcastStableID: podcastStableID, on: sql)
         }
-        return try await fallbackSearch(term: trimmed, limit: limit, on: db)
+        return try await fallbackSearch(term: trimmed, limit: limit, podcastStableID: podcastStableID, on: db)
     }
 
     // MARK: - Postgres full-text search
@@ -42,7 +44,7 @@ struct EpisodeSearchService: Sendable {
         let snippet: String?
     }
 
-    private func postgresSearch(term: String, limit: Int, on sql: any SQLDatabase) async throws -> [EpisodeResponse] {
+    private func postgresSearch(term: String, limit: Int, podcastStableID: String?, on sql: any SQLDatabase) async throws -> [EpisodeResponse] {
         let headlineOptions = "StartSel=\(Self.highlightStart),StopSel=\(Self.highlightEnd),MaxFragments=1,MinWords=7,MaxWords=24,ShortWord=2,FragmentDelimiter= … "
         let rows = try await sql.raw("""
         SELECT e.id, e.podcast_id, e.stable_id, e.title, e.summary, e.audio_url,
@@ -57,6 +59,7 @@ struct EpisodeSearchService: Sendable {
         JOIN podcasts p ON p.id = e.podcast_id,
              websearch_to_tsquery('english', \(bind: term)) query
         WHERE e.search_vector @@ query
+          AND (\(bind: podcastStableID)::text IS NULL OR p.stable_id = \(bind: podcastStableID))
         ORDER BY ts_rank('{0.1, 0.2, 0.4, 1.0}'::real[], e.search_vector, query) DESC,
                  e.published_at DESC NULLS LAST
         LIMIT \(bind: limit)
@@ -100,15 +103,26 @@ struct EpisodeSearchService: Sendable {
 
     // MARK: - Fallback substring search (SQLite tests)
 
-    private func fallbackSearch(term: String, limit: Int, on db: any Database) async throws -> [EpisodeResponse] {
+    private func fallbackSearch(term: String, limit: Int, podcastStableID: String?, on db: any Database) async throws -> [EpisodeResponse] {
         let needle = term.lowercased()
-        let candidates = try await Episode.query(on: db)
+        var scopeID: UUID?
+        if let podcastStableID {
+            guard let podcast = try await Podcast.query(on: db).filter(\.$stableID == podcastStableID).first() else {
+                return []
+            }
+            scopeID = try podcast.requireID()
+        }
+        let query = Episode.query(on: db)
             .with(\.$podcast)
             .group(.or) { group in
                 group.filter(\.$title ~~ term)
                 group.filter(\.$summary ~~ term)
                 group.filter(\.$transcriptText ~~ term)
             }
+        if let scopeID {
+            query.filter(\.$podcast.$id == scopeID)
+        }
+        let candidates = try await query
             .sort(\.$publishedAt, .descending)
             .limit(limit)
             .all()

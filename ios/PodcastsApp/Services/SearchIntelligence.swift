@@ -41,7 +41,10 @@ enum SearchIntelligence {
         guard let embedding = wordEmbedding else { return uniqued(base) }
         var terms = base
         for term in base {
+            // NLEmbedding is not thread-safe; serialize access (see `similarity`).
+            embeddingLock.lock()
             let neighbours = embedding.neighbors(for: term, maximumCount: perTerm)
+            embeddingLock.unlock()
             for (word, distance) in neighbours where distance <= maxDistance {
                 let folded = fold(word)
                 if folded.count > 1, !stopWords.contains(folded) {
@@ -58,13 +61,23 @@ enum SearchIntelligence {
     /// of text (1 = identical meaning). Falls back to token overlap when the
     /// embedding is unavailable.
     static func similarity(query: String, text: String) -> Double {
-        guard !query.isEmpty, !text.isEmpty else { return 0 }
+        let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedQuery.isEmpty, !trimmedText.isEmpty else { return 0 }
         if let embedding = sentenceEmbedding {
-            let distance = embedding.distance(between: query, and: text, distanceType: .cosine)
+            // NLEmbedding is not documented as thread-safe and crashes
+            // (EXC_BAD_ACCESS) when `distance`/`neighbors` run concurrently on the
+            // same instance — which happened because ranking runs in detached
+            // tasks and searches can overlap. Serialize every access.
+            embeddingLock.lock()
+            let distance = embedding.distance(between: trimmedQuery, and: trimmedText, distanceType: .cosine)
+            embeddingLock.unlock()
             // NLDistance for cosine is in [0, 2]; map to a [0, 1] similarity.
+            // Guard against non-finite results for out-of-vocabulary input.
+            guard distance.isFinite else { return tokenOverlap(query: trimmedQuery, text: trimmedText) }
             return max(0, 1 - distance / 2)
         }
-        return tokenOverlap(query: query, text: text)
+        return tokenOverlap(query: trimmedQuery, text: trimmedText)
     }
 
     private static func tokenOverlap(query: String, text: String) -> Double {
@@ -76,9 +89,12 @@ enum SearchIntelligence {
 
     // MARK: - Embedding handles (loaded once)
 
-    // Loaded once and only read afterwards; NLEmbedding lookups are thread-safe.
+    // NLEmbedding instances are loaded once but are NOT thread-safe to call;
+    // `embeddingLock` serializes every distance/neighbor lookup across the
+    // detached ranking tasks that use them.
     nonisolated(unsafe) private static let wordEmbedding: NLEmbedding? = NLEmbedding.wordEmbedding(for: .english)
     nonisolated(unsafe) private static let sentenceEmbedding: NLEmbedding? = NLEmbedding.sentenceEmbedding(for: .english)
+    private static let embeddingLock = NSLock()
 
     private static func uniqued(_ terms: [String]) -> [String] {
         var seen: Set<String> = []

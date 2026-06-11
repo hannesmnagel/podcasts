@@ -14,6 +14,8 @@ schemes:
       config: Debug
     test:
       config: Debug
+      targets:
+        - PodcastsTests
     profile:
       config: Release
     analyze:
@@ -88,6 +90,24 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         CURRENT_PROJECT_VERSION: 1
         SWIFT_VERSION: "6.0"
+  PodcastsTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "26.1"
+    sources:
+      - path: ios/PodcastsTests
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.nagel.podcasts.tests
+        GENERATE_INFOPLIST_FILE: YES
+        SUPPORTS_MACCATALYST: YES
+        MACOSX_DEPLOYMENT_TARGET: "15.0"
+        # The host app's product name ("The Podcatcher") differs from its target
+        # name, so point TEST_HOST at the real product binary.
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/The Podcatcher.app/The Podcatcher"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+    dependencies:
+      - target: Podcasts
   Podcasts:
     type: application
     platform: iOS
@@ -98,6 +118,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.nagel.podcasts
         PRODUCT_NAME: The Podcatcher
+        PRODUCT_MODULE_NAME: Podcasts
         INFOPLIST_KEY_CFBundleDisplayName: The Podcatcher
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES

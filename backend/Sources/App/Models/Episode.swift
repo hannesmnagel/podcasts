@@ -14,6 +14,7 @@ final class Episode: Model, Content, @unchecked Sendable {
     @Field(key: "image_url") var imageURL: String?
     @Field(key: "published_at") var publishedAt: Date?
     @Field(key: "duration") var duration: TimeInterval?
+    @OptionalField(key: "transcript_text") var transcriptText: String?
     @Timestamp(key: "created_at", on: .create) var createdAt: Date?
     @Timestamp(key: "updated_at", on: .update) var updatedAt: Date?
 

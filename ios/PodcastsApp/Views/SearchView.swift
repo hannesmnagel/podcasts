@@ -43,6 +43,9 @@ final class SearchViewController: UITableViewController, UISearchResultsUpdating
     private var summarySnippets: [String: String] = [:]
     private var podcastsCollapsed = false
     private var showAllPodcasts = false
+    private var popularPodcasts: [PodcastDTO] = []
+    /// Monotonic token so a slow in-flight search can't overwrite a newer one.
+    private var searchGeneration = 0
 
     init(modelContext: ModelContext, player: PlayerController) {
         self.modelContext = modelContext
@@ -77,6 +80,16 @@ final class SearchViewController: UITableViewController, UISearchResultsUpdating
         #endif
         loadSubscriptions()
         updateRows()
+        Task { await loadPopularPodcasts() }
+    }
+
+    private func loadPopularPodcasts() async {
+        guard popularPodcasts.isEmpty else { return }
+        guard let popular = try? await client.popularPodcasts(limit: 25), !popular.isEmpty else { return }
+        popularPodcasts = popular
+        if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            updateRows()
+        }
     }
 
     override func viewWillAppear(_ animated: Bool) {
@@ -86,6 +99,7 @@ final class SearchViewController: UITableViewController, UISearchResultsUpdating
         #endif
         loadSubscriptions()
         tableView.reloadData()
+        Task { await loadPopularPodcasts() }
     }
 
     override func viewDidAppear(_ animated: Bool) {
@@ -132,7 +146,7 @@ final class SearchViewController: UITableViewController, UISearchResultsUpdating
     override func tableView(_ tableView: UITableView, viewForHeaderInSection section: Int) -> UIView? {
         guard section == 0, !podcastResults.isEmpty else { return nil }
         var configuration = UIButton.Configuration.plain()
-        configuration.title = "Podcasts"
+        configuration.title = isShowingPopular ? "Popular Shows" : "Podcasts"
         configuration.image = UIImage(systemName: podcastsCollapsed ? "chevron.right" : "chevron.down")
         configuration.imagePlacement = .leading
         configuration.baseForegroundColor = .secondaryLabel
@@ -172,7 +186,9 @@ final class SearchViewController: UITableViewController, UISearchResultsUpdating
             switch result {
             case .known(let podcast):
                 let cell = tableView.dequeueReusableCell(withIdentifier: SearchPodcastCell.reuseIdentifier, for: indexPath) as! SearchPodcastCell
-                cell.configure(title: podcast.title.isEmpty ? podcast.feedURL : podcast.title, subtitle: podcast.feedURL, artworkURL: podcast.imageURL.flatMap(URL.init(string:)), isSubscribed: isSubscribed(to: podcast.stableID), isAdding: addingFeedURL == podcast.feedURL)
+                let trimmedDescription = podcast.description?.trimmingCharacters(in: .whitespacesAndNewlines)
+                let subtitle = (trimmedDescription?.isEmpty == false ? trimmedDescription : nil) ?? URL(string: podcast.feedURL)?.host() ?? podcast.feedURL
+                cell.configure(title: podcast.title.isEmpty ? podcast.feedURL : podcast.title, subtitle: subtitle, artworkURL: podcast.imageURL.flatMap(URL.init(string:)), isSubscribed: isSubscribed(to: podcast.stableID), isAdding: addingFeedURL == podcast.feedURL)
                 cell.addTapped = { [weak self] in Task { await self?.addKnownPodcast(podcast) } }
                 return cell
             case .directory(let podcast):
@@ -186,6 +202,7 @@ final class SearchViewController: UITableViewController, UISearchResultsUpdating
             let cell = tableView.dequeueReusableCell(withIdentifier: EpisodeCell.reuseIdentifier, for: indexPath) as! EpisodeCell
             let isCurrentPlaying = player.currentEpisode?.stableID == episode.stableID && player.isPlaying
             cell.configure(episode: episode, summaryText: summarySnippets[episode.stableID] ?? episode.summary, artworkURL: LibraryStore.localArtworkURL(for: episode, in: modelContext), isPlayed: playedEpisodeIDs.contains(episode.stableID), dimsPlayed: false, isCurrentPlaying: isCurrentPlaying)
+            applySearchHighlight(to: cell, for: episode)
             cell.playTapped = { [weak self] in self?.play(episode) }
             return cell
         default:
@@ -195,17 +212,30 @@ final class SearchViewController: UITableViewController, UISearchResultsUpdating
 
     override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
-        if indexPath.section == 0,
-           indexPath.row == visiblePodcastResults.count,
-           podcastResults.count > visiblePodcastResults.count {
-            showAllPodcasts = true
-            tableView.reloadSections(IndexSet(integer: 0), with: .automatic)
+        if indexPath.section == 0 {
+            if indexPath.row == visiblePodcastResults.count,
+               podcastResults.count > visiblePodcastResults.count {
+                showAllPodcasts = true
+                tableView.reloadSections(IndexSet(integer: 0), with: .automatic)
+                return
+            }
+            openPreview(for: visiblePodcastResults[indexPath.row])
             return
         }
 
         guard indexPath.section == 1 else { return }
         let episode = visibleEpisodeSnapshot[indexPath.row]
         navigationController?.pushViewController(EpisodeDetailViewController(episode: episode, modelContext: modelContext, player: player), animated: true)
+    }
+
+    private func openPreview(for result: PodcastSearchResult) {
+        let identity: PodcastPreviewViewController.Identity
+        switch result {
+        case .known(let podcast): identity = .init(podcast: podcast)
+        case .directory(let podcast): identity = .init(directory: podcast)
+        }
+        let preview = PodcastPreviewViewController(identity: identity, modelContext: modelContext, player: player)
+        navigationController?.pushViewController(preview, animated: true)
     }
 
     private func submitSearch() async {
@@ -220,9 +250,15 @@ final class SearchViewController: UITableViewController, UISearchResultsUpdating
 
     private func search(_ trimmed: String) async {
         guard !trimmed.isEmpty else { return }
+        searchGeneration += 1
+        let generation = searchGeneration
+
+        // Instant, offline-friendly local results while the network search runs.
         let localMatches = LibraryStore.localEpisodes(matching: trimmed, in: modelContext)
         if !localMatches.isEmpty {
-            results = EpisodeSearchDTO(episodes: localMatches)
+            let rankedLocal = await Self.rankEpisodes(localMatches, query: trimmed)
+            guard generation == searchGeneration else { return }
+            results = EpisodeSearchDTO(episodes: rankedLocal)
             refreshEpisodeStateSets()
             refreshVisibleEpisodeSnapshot()
             tableView.reloadData()
@@ -230,18 +266,89 @@ final class SearchViewController: UITableViewController, UISearchResultsUpdating
 
         do {
             let searchResults = try await client.search(trimmed)
+            guard generation == searchGeneration else { return }
             await LibraryStore.cacheEpisodes(searchResults.episodes, in: modelContext)
+            guard generation == searchGeneration else { return }
+
+            // Use the server hits directly so transcript-only matches (which the
+            // local title/summary filter would drop) and their highlighted
+            // snippets survive, then fold in any local-only matches.
+            let merged = Self.mergeEpisodes(server: searchResults.episodes, local: localMatches)
+            let ranked = await Self.rankEpisodes(merged, query: trimmed)
+            guard generation == searchGeneration else { return }
+
             results = EpisodeSearchDTO(
                 podcasts: searchResults.podcasts,
-                episodes: LibraryStore.localEpisodes(matching: trimmed, in: modelContext),
+                episodes: ranked,
                 directory: searchResults.directory
             )
             refreshEpisodeStateSets()
             refreshVisibleEpisodeSnapshot()
             updateRows()
         } catch {
-            showError(error)
+            // A new keystroke cancels the in-flight request; that is not an error.
+            if Self.isCancellation(error) { return }
+            // Don't disrupt usable local results with an alert; only surface a
+            // genuine failure when there is nothing to show.
+            if visibleEpisodeSnapshot.isEmpty {
+                showError(error)
+            }
         }
+    }
+
+    private static func isCancellation(_ error: Error) -> Bool {
+        if error is CancellationError { return true }
+        if let urlError = error as? URLError, urlError.code == .cancelled { return true }
+        return false
+    }
+
+    private static func mergeEpisodes(server: [EpisodeDTO], local: [EpisodeDTO]) -> [EpisodeDTO] {
+        var seen = Set(server.map(\.stableID))
+        var output = server
+        for episode in local where seen.insert(episode.stableID).inserted {
+            output.append(episode)
+        }
+        return output
+    }
+
+    /// Ranks results so title matches beat description matches, which beat
+    /// transcript-only matches, with an on-device semantic-similarity tiebreak.
+    /// Runs off the main actor — embedding lookups are too heavy for the UI thread.
+    private static func rankEpisodes(_ episodes: [EpisodeDTO], query: String) async -> [EpisodeDTO] {
+        guard episodes.count > 1 else { return episodes }
+        return await Task.detached(priority: .userInitiated) {
+            let foldedQuery = SearchIntelligence.fold(query)
+            let queryLemmas = Set(SearchIntelligence.lemmas(of: query))
+
+            func score(_ episode: EpisodeDTO) -> Double {
+                var score = 0.0
+                let foldedTitle = SearchIntelligence.fold(episode.title)
+                if foldedTitle.contains(foldedQuery) {
+                    score += 1000
+                } else if !queryLemmas.isEmpty,
+                          !queryLemmas.isDisjoint(with: Set(SearchIntelligence.lemmas(of: episode.title))) {
+                    score += 600
+                }
+                if let summary = episode.summary, SearchIntelligence.fold(summary).contains(foldedQuery) {
+                    score += 200
+                }
+                switch episode.matchField {
+                case "title": score += 300
+                case "summary": score += 120
+                case "transcript": score += 60
+                default: break
+                }
+                score += SearchIntelligence.similarity(query: query, text: episode.title) * 120
+                // Recency tiebreak (tiny, only separates otherwise-equal scores).
+                score += (episode.publishedAt?.timeIntervalSince1970 ?? 0) / 1_000_000_000_000
+                return score
+            }
+
+            return episodes
+                .map { ($0, score($0)) }
+                .sorted { $0.1 > $1.1 }
+                .map { $0.0 }
+        }.value
     }
 
     private func addFeedURL(_ url: URL) async {
@@ -375,13 +482,48 @@ final class SearchViewController: UITableViewController, UISearchResultsUpdating
         visibleEpisodeSnapshot = results.episodes.filter { !deletedEpisodeIDs.contains($0.stableID) }
     }
 
+    /// Shows the sentence around the match (with the term emphasized) and a
+    /// "Found in transcript/description/title" badge on a search result cell.
+    private func applySearchHighlight(to cell: EpisodeCell, for episode: EpisodeDTO) {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        let font = UIFont.preferredFont(forTextStyle: .subheadline)
+
+        if let marked = episode.matchSnippet, !marked.isEmpty {
+            let attributed = SearchHighlighter.attributed(markedSnippet: marked, font: font)
+            cell.applySearchHighlight(snippet: attributed, matchField: episode.matchField, date: episode.publishedAt)
+            return
+        }
+
+        let foldedQuery = SearchIntelligence.fold(trimmed)
+        if SearchIntelligence.fold(episode.title).contains(foldedQuery) {
+            cell.applySearchHighlight(snippet: nil, matchField: "title", date: episode.publishedAt)
+        } else if let summary = episode.summary,
+                  let snippet = SearchHighlighter.attributed(text: summary, matching: trimmed, font: font) {
+            cell.applySearchHighlight(snippet: snippet, matchField: "summary", date: episode.publishedAt)
+        } else if let field = episode.matchField {
+            cell.applySearchHighlight(snippet: nil, matchField: field, date: episode.publishedAt)
+        }
+    }
+
     private func isSubscribed(to stableID: String) -> Bool {
         subscriptions.contains { $0.stableID == stableID }
+    }
+
+    private var isShowingPopular: Bool {
+        query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !popularPodcasts.isEmpty
     }
 
     private var podcastResults: [PodcastSearchResult] {
         var seenFeedURLs: Set<String> = []
         var output: [PodcastSearchResult] = []
+        if isShowingPopular {
+            for podcast in popularPodcasts {
+                guard seenFeedURLs.insert(podcast.feedURL).inserted else { continue }
+                output.append(.known(podcast))
+            }
+            return output
+        }
         for podcast in results.podcasts {
             guard seenFeedURLs.insert(podcast.feedURL).inserted else { continue }
             output.append(.known(podcast))
@@ -394,7 +536,7 @@ final class SearchViewController: UITableViewController, UISearchResultsUpdating
     }
 
     private var visiblePodcastResults: [PodcastSearchResult] {
-        showAllPodcasts ? podcastResults : Array(podcastResults.prefix(5))
+        (showAllPodcasts || isShowingPopular) ? podcastResults : Array(podcastResults.prefix(5))
     }
 
     private var visiblePodcastRowCount: Int {
@@ -561,7 +703,8 @@ private final class SearchPodcastCell: UITableViewCell {
     }
 
     private func configure() {
-        selectionStyle = .none
+        selectionStyle = .default
+        accessoryType = .disclosureIndicator
         titleLabel.font = .preferredFont(forTextStyle: .headline)
         titleLabel.numberOfLines = 2
         subtitleLabel.font = .preferredFont(forTextStyle: .subheadline)

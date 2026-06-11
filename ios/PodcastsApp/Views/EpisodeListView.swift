@@ -452,7 +452,7 @@ class EpisodeListViewController: UITableViewController {
             for try await (_, podcastEpisodes) in group {
                 await libraryStoreActor.cacheEpisodes(podcastEpisodes)
             }
-            return await libraryStoreActor.fetchLocalEpisodes(forPodcastIDs: podcastIDs)
+            return await libraryStoreActor.fetchLibraryEpisodes(subscriptionIDs: podcastIDs)
         }
     }
 
@@ -468,7 +468,7 @@ class EpisodeListViewController: UITableViewController {
         case .podcast(let podcastID):
             return await libraryStoreActor.fetchLocalEpisodes(forPodcastIDs: [podcastID])
         case .subscriptions(let podcastIDs):
-            return await libraryStoreActor.fetchLocalEpisodes(forPodcastIDs: podcastIDs)
+            return await libraryStoreActor.fetchLibraryEpisodes(subscriptionIDs: podcastIDs)
         case .search(let query):
             return await libraryStoreActor.fetchLocalEpisodes(matching: query)
         case .placeholder:
@@ -977,16 +977,38 @@ final class EpisodeCell: UITableViewCell {
         artworkView.cancel()
         playTapped = nil
         waveformView.stopAnimating()
+        summaryLabel.numberOfLines = 1
+        summaryLabel.attributedText = nil
     }
 
     func configure(episode: EpisodeDTO, summaryText: String?, artworkURL: URL?, isPlayed: Bool, dimsPlayed: Bool, isCurrentPlaying: Bool) {
         episodeID = episode.stableID
         titleLabel.text = episode.title
         metadataLabel.text = episode.publishedAt?.formatted(date: .abbreviated, time: .omitted) ?? " "
+        summaryLabel.numberOfLines = 1
+        summaryLabel.attributedText = nil
         summaryLabel.text = summaryText?.isEmpty == false ? summaryText : " "
         artworkView.load(url: artworkURL)
         contentView.alpha = dimsPlayed && isPlayed ? 0.48 : 1
         setIsCurrentPlaying(isCurrentPlaying)
+    }
+
+    /// Overlays a search match: a highlighted snippet (sentence around the term)
+    /// in place of the summary, plus a "Found in transcript/title" badge.
+    func applySearchHighlight(snippet: NSAttributedString?, matchField: String?, date: Date?) {
+        var metadataParts: [String] = []
+        if let date { metadataParts.append(date.formatted(date: .abbreviated, time: .omitted)) }
+        switch matchField {
+        case "transcript": metadataParts.append("Found in transcript")
+        case "summary": metadataParts.append("Found in description")
+        case "title": metadataParts.append("Title match")
+        default: break
+        }
+        metadataLabel.text = metadataParts.isEmpty ? " " : metadataParts.joined(separator: "  ·  ")
+        if let snippet {
+            summaryLabel.numberOfLines = 2
+            summaryLabel.attributedText = snippet
+        }
     }
 
     private func configure() {

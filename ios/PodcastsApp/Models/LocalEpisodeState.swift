@@ -16,6 +16,10 @@ final class LocalEpisodeState {
     var duration: TimeInterval?
     var isDownloaded: Bool = false
     var isDeleted: Bool = false
+    /// True when the user added this single episode to their library without
+    /// subscribing to its podcast. Such episodes appear in the Episodes tab
+    /// even though their show isn't in the subscription list.
+    var isSaved: Bool = false
     var downloadedFileURL: URL?
     var lastListenedAt: Date?
     var deletedAt: Date?

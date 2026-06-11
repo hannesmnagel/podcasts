@@ -70,6 +70,18 @@ actor LibraryStoreActor {
             .sorted { ($0.publishedAt ?? .distantPast) > ($1.publishedAt ?? .distantPast) }
     }
 
+    /// Episodes for the Episodes tab: every cached episode belonging to a
+    /// subscribed podcast, plus any standalone episodes the user saved
+    /// individually (even when their show isn't subscribed).
+    func fetchLibraryEpisodes(subscriptionIDs: [String]) -> [EpisodeDTO] {
+        let subs = Set(subscriptionIDs)
+        let states = (try? modelContext.fetch(FetchDescriptor<LocalEpisodeState>())) ?? []
+        return states
+            .filter { !$0.isDeleted && $0.cachedAt != nil && (subs.contains($0.podcastStableID) || $0.isSaved) }
+            .map { $0.episodeDTO(preferDownloadedFile: true) }
+            .sorted { ($0.publishedAt ?? .distantPast) > ($1.publishedAt ?? .distantPast) }
+    }
+
     func fetchLocalEpisodes(matching query: String) -> [EpisodeDTO] {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !trimmed.isEmpty else { return [] }

@@ -6,6 +6,7 @@ struct PodcastController: RouteCollection {
         let podcasts = routes.grouped("podcasts")
         podcasts.post(use: create)
         podcasts.get(use: index)
+        podcasts.get("popular", use: popular)
         podcasts.post(":id", "crawl", use: crawl)
         podcasts.post(":id", "crawl-request", use: requestCrawl)
     }
@@ -37,6 +38,43 @@ struct PodcastController: RouteCollection {
             .limit(limit)
             .all()
             .map(PodcastResponse.init)
+    }
+
+    /// Podcasts ranked by aggregate listener demand (transcript/chapter/fingerprint
+    /// requests), backfilled with recently active shows. Powers the "Popular"
+    /// section in the search tab when no query is entered.
+    func popular(req: Request) async throws -> [PodcastResponse] {
+        let limit = min(max(req.query[Int.self, at: "limit"] ?? 25, 1), 100)
+        var seen: Set<UUID> = []
+        var result: [PodcastResponse] = []
+
+        let ranked = try await PodcastDemand.query(on: req.db)
+            .with(\.$podcast)
+            .all()
+            .sorted { $0.priorityScore > $1.priorityScore }
+        for demand in ranked {
+            guard let podcast = demand.$podcast.value,
+                  let id = podcast.id,
+                  podcast.lastCrawledAt != nil,
+                  !podcast.title.isEmpty,
+                  seen.insert(id).inserted else { continue }
+            result.append(PodcastResponse(podcast: podcast))
+            if result.count >= limit { break }
+        }
+
+        if result.count < limit {
+            let extras = try await Podcast.query(on: req.db)
+                .filter(\.$lastCrawledAt != nil)
+                .sort(\.$updatedAt, .descending)
+                .limit(limit)
+                .all()
+            for podcast in extras {
+                guard let id = podcast.id, !podcast.title.isEmpty, seen.insert(id).inserted else { continue }
+                result.append(PodcastResponse(podcast: podcast))
+                if result.count >= limit { break }
+            }
+        }
+        return result
     }
 
     func crawl(req: Request) async throws -> PodcastResponse {

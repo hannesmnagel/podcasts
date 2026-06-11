@@ -112,6 +112,33 @@ struct BackendClient: Sendable {
         return try await get("episodes/search?q=\(encoded)")
     }
 
+    /// Podcasts ranked by listener demand, for the empty-query "Popular" section.
+    func popularPodcasts(limit: Int = 25) async throws -> [PodcastDTO] {
+        let clamped = min(max(limit, 1), 100)
+        return try await get("podcasts/popular?limit=\(clamped)")
+    }
+
+    /// Ensures a podcast exists server-side (registering + crawling it if needed)
+    /// and returns its episodes, without subscribing the user locally. Used to
+    /// preview a show's episodes before adding it.
+    func previewEpisodes(feedURL: URL) async throws -> (podcast: PodcastDTO, episodes: [EpisodeDTO]) {
+        let added = try await addPodcast(feedURL: feedURL)
+        await requestPodcastCrawl(added.stableID)
+        var podcast = added
+        var episodes = (try? await episodes(for: added.stableID)) ?? []
+        // First-time crawls are asynchronous; poll briefly so the preview isn't empty.
+        var delays = [300_000_000, 600_000_000, 1_000_000_000, 1_500_000_000].makeIterator()
+        while episodes.isEmpty, let delay = delays.next() {
+            try? await Task.sleep(nanoseconds: UInt64(delay))
+            if Task.isCancelled { break }
+            episodes = (try? await self.episodes(for: added.stableID)) ?? []
+            if let refreshed = try? await podcasts().first(where: { $0.stableID == added.stableID }) {
+                podcast = refreshed
+            }
+        }
+        return (podcast, episodes)
+    }
+
     @discardableResult
     func requestArtifacts(for episodeID: String) async throws -> ArtifactRequestDTO {
         try await post("episodes/\(episodeID)/artifact-requests", body: ArtifactDemandDTO(transcript: true, chapters: true, fingerprint: true))
@@ -246,6 +273,37 @@ struct EpisodeDTO: Codable, Identifiable, Hashable, Sendable {
     let imageURL: String?
     let publishedAt: Date?
     let duration: TimeInterval?
+    /// Highlighted excerpt (sentence around the match) for search hits, with
+    /// matched terms wrapped in « » markers. Nil outside of search.
+    let matchSnippet: String?
+    /// Field the search term matched: "title", "summary", or "transcript".
+    let matchField: String?
+
+    init(
+        id: UUID?,
+        podcastStableID: String?,
+        stableID: String,
+        title: String,
+        summary: String?,
+        audioURL: String,
+        imageURL: String?,
+        publishedAt: Date?,
+        duration: TimeInterval?,
+        matchSnippet: String? = nil,
+        matchField: String? = nil
+    ) {
+        self.id = id
+        self.podcastStableID = podcastStableID
+        self.stableID = stableID
+        self.title = title
+        self.summary = summary
+        self.audioURL = audioURL
+        self.imageURL = imageURL
+        self.publishedAt = publishedAt
+        self.duration = duration
+        self.matchSnippet = matchSnippet
+        self.matchField = matchField
+    }
 }
 
 struct EpisodeSearchDTO: Codable, Hashable, Sendable {

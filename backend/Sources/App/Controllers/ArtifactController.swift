@@ -173,6 +173,12 @@ struct ArtifactController: RouteCollection {
         artifact.segmentFingerprintsJSON = input.segmentFingerprintsJSON
         artifact.textHash = input.textHash
         try await artifact.save(on: req.db)
+        // Keep the denormalized, full-text-searchable transcript on the episode in
+        // sync with the latest transcript upload.
+        if let plainText = TranscriptText.plainText(fromSegmentsJSON: input.segmentsJSON) {
+            episode.transcriptText = plainText
+            try await episode.save(on: req.db)
+        }
         if let fingerprint = input.fingerprint {
             _ = try await saveFingerprint(fingerprint, episodeID: episodeID, on: req.db)
         }

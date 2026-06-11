@@ -68,6 +68,38 @@ enum LibraryStore {
         try? context.save()
     }
 
+    /// Adds a single episode to the library without subscribing to its podcast.
+    /// The episode is cached and flagged so it surfaces in the Episodes tab.
+    static func saveSingleEpisode(_ episode: EpisodeDTO, in context: ModelContext) async {
+        await cacheEpisode(episode, in: context)
+        let state = episodeState(for: episode, in: context) ?? makeEpisodeState(for: episode, in: context)
+        state.isSaved = true
+        state.isDeleted = false
+        state.deletedAt = nil
+        if state.cachedAt == nil { state.cachedAt = .now }
+        try? context.save()
+    }
+
+    static func unsaveSingleEpisode(_ episode: EpisodeDTO, in context: ModelContext) {
+        guard let state = episodeState(for: episode, in: context) else { return }
+        state.isSaved = false
+        try? context.save()
+    }
+
+    static func isEpisodeSaved(_ episode: EpisodeDTO, in context: ModelContext) -> Bool {
+        episodeState(for: episode, in: context)?.isSaved ?? false
+    }
+
+    /// Standalone saved episodes whose podcast is not in `subscriptionIDs`.
+    static func savedStandaloneEpisodes(excludingPodcastIDs subscriptionIDs: [String], in context: ModelContext) -> [EpisodeDTO] {
+        let excluded = Set(subscriptionIDs)
+        let states = (try? context.fetch(FetchDescriptor<LocalEpisodeState>())) ?? []
+        return states
+            .filter { $0.isSaved && !$0.isDeleted && !excluded.contains($0.podcastStableID) }
+            .map { $0.episodeDTO(preferDownloadedFile: true) }
+            .sorted { ($0.publishedAt ?? .distantPast) > ($1.publishedAt ?? .distantPast) }
+    }
+
     static func episodeState(for episode: EpisodeDTO, in context: ModelContext) -> LocalEpisodeState? {
         let stableID = episode.stableID
         let descriptor = FetchDescriptor<LocalEpisodeState>(predicate: #Predicate { $0.episodeStableID == stableID })

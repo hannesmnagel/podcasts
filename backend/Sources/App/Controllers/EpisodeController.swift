@@ -17,7 +17,7 @@ struct EpisodeController: RouteCollection {
             .sort(\.$publishedAt, .descending)
             .limit(limit)
             .all()
-            .map(EpisodeResponse.init)
+            .map { EpisodeResponse(episode: $0) }
     }
 
     func search(req: Request) async throws -> EpisodeSearchResponse {
@@ -31,16 +31,7 @@ struct EpisodeController: RouteCollection {
             .limit(25)
             .all()
             .map(PodcastResponse.init)
-        let episodes = try await Episode.query(on: req.db)
-            .with(\.$podcast)
-            .group(.or) { group in
-                group.filter(\.$title ~~ q)
-                group.filter(\.$summary ~~ q)
-            }
-            .sort(\.$publishedAt, .descending)
-            .limit(50)
-            .all()
-            .map(EpisodeResponse.init)
+        let episodes = try await EpisodeSearchService().search(term: q, limit: 50, on: req.db)
         let directory = try await PodcastDirectorySearch().search(term: q, on: req.application)
         return EpisodeSearchResponse(podcasts: podcasts, episodes: episodes, directory: directory)
     }
@@ -56,7 +47,7 @@ struct EpisodeController: RouteCollection {
             .offset(offset)
             .limit(limit)
             .all()
-            .map(EpisodeResponse.init)
+            .map { EpisodeResponse(episode: $0) }
     }
 
     func episode(req: Request) async throws -> EpisodeResponse {

@@ -297,7 +297,7 @@ final class RootTabController: UITabBarController {
             )
         }
 
-        let podcastTitles = Dictionary(uniqueKeysWithValues: subscriptions.map { ($0.stableID, $0.title) })
+        let podcastTitles = Dictionary(subscriptions.map { ($0.stableID, $0.title) }, uniquingKeysWith: { first, _ in first })
         let subscribedPodcastIDs = Set(subscriptions.map { $0.stableID })
         func makeEpisodeInfo(_ state: LocalEpisodeState) -> SharedEpisodeInfo {
             let artworkFileURL: URL? = state.cachedImageFileURL ?? {

@@ -489,11 +489,17 @@ enum LibraryStore {
         let episodeIDs = Set(episodes.map(\.stableID))
         guard !episodeIDs.isEmpty else { return [:] }
         let allStates = (try? context.fetch(FetchDescriptor<LocalEpisodeState>())) ?? []
-        return Dictionary(uniqueKeysWithValues: allStates.compactMap { state in
-            guard episodeIDs.contains(state.episodeStableID),
-                  let snippet = state.strippedSummary, !snippet.isEmpty else { return nil }
-            return (state.episodeStableID, snippet)
-        })
+        // Duplicate LocalEpisodeState rows for one episode can exist (CloudKit
+        // sync / concurrent caching), so tolerate duplicate keys instead of
+        // trapping; any non-empty snippet is equivalent.
+        return Dictionary(
+            allStates.compactMap { state -> (String, String)? in
+                guard episodeIDs.contains(state.episodeStableID),
+                      let snippet = state.strippedSummary, !snippet.isEmpty else { return nil }
+                return (state.episodeStableID, snippet)
+            },
+            uniquingKeysWith: { first, _ in first }
+        )
     }
 
     static func localEpisode(for episode: EpisodeDTO, in context: ModelContext) -> EpisodeDTO {
@@ -534,7 +540,7 @@ enum LibraryStore {
     static func setEpisodeOrder(_ orderedStableIDs: [String], in context: ModelContext) {
         let descriptor = FetchDescriptor<LocalEpisodeState>()
         let states = (try? context.fetch(descriptor)) ?? []
-        let statesByID = Dictionary(uniqueKeysWithValues: states.map { ($0.episodeStableID, $0) })
+        let statesByID = Dictionary(states.map { ($0.episodeStableID, $0) }, uniquingKeysWith: { first, _ in first })
         // Clear old indices first so removed episodes don't interfere
         states.forEach { $0.sortIndex = nil }
         for (index, id) in orderedStableIDs.enumerated() {
@@ -590,9 +596,12 @@ enum LibraryStore {
         guard !wantedIDs.isEmpty else { return [:] }
         let descriptor = FetchDescriptor<LocalEpisodeState>()
         let states = (try? context.fetch(descriptor)) ?? []
-        return Dictionary(uniqueKeysWithValues: states.compactMap { state in
-            wantedIDs.contains(state.episodeStableID) ? (state.episodeStableID, state) : nil
-        })
+        return Dictionary(
+            states.compactMap { state -> (String, LocalEpisodeState)? in
+                wantedIDs.contains(state.episodeStableID) ? (state.episodeStableID, state) : nil
+            },
+            uniquingKeysWith: { first, _ in first }
+        )
     }
 
     static func prefetchDetails(for episodes: [EpisodeDTO], client: BackendClient, in context: ModelContext) async {

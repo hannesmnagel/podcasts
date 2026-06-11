@@ -171,7 +171,8 @@ actor BackgroundRefreshStore {
             predicate: #Predicate { ids.contains($0.episodeStableID) }
         )
         let states = (try? modelContext.fetch(descriptor)) ?? []
-        return Dictionary(uniqueKeysWithValues: states.map { ($0.episodeStableID, $0) })
+        // Tolerate duplicate state rows (CloudKit sync can create them).
+        return Dictionary(states.map { ($0.episodeStableID, $0) }, uniquingKeysWith: { first, _ in first })
     }
 
     private func downloadedEpisodeIDs(for episodes: [EpisodeDTO]) -> Set<String> {

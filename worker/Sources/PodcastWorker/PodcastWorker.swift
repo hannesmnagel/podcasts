@@ -181,7 +181,8 @@ struct JobProcessor {
             _ = try await client.completeJob(job.id)
             print("completed job \(job.id)")
         } catch {
-            try? await client.failJob(job.id, retry: true)
+            let retry = !isPermanentFailure(error)
+            try? await client.failJob(job.id, retry: retry)
             throw error
         }
     }
@@ -202,7 +203,8 @@ struct JobProcessor {
             _ = try await client.completeJob(job.id)
             print("completed job \(job.id)")
         } catch {
-            try? await client.failJob(job.id, retry: true)
+            let retry = !isPermanentFailure(error)
+            try? await client.failJob(job.id, retry: retry)
             throw error
         }
     }
@@ -217,6 +219,14 @@ struct JobProcessor {
         default:
             activeJobBackendURL = nil
             throw WorkerError.unsupportedJobKind(job.kind)
+        }
+    }
+
+    private func isPermanentFailure(_ error: any Error) -> Bool {
+        switch error as? WorkerError {
+        case .downloadFailed(let status): return status == 404 || status == 410
+        case .transcriptTooShort: return true
+        default: return false
         }
     }
 

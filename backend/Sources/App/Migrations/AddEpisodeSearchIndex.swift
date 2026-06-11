@@ -6,29 +6,40 @@ import Foundation
 /// weighted full-text `search_vector` (title = A, summary = B, transcript = C)
 /// backed by a GIN index. This powers ranked, snippet-highlighted search that
 /// prefers title matches over transcript-only matches.
+///
+/// Every step is idempotent (IF NOT EXISTS / DROP-then-ADD) so a partial failure
+/// followed by a restart re-runs cleanly instead of crash-looping. The
+/// transcript portion of the vector is position-stripped and length-bounded so a
+/// very long transcript can never exceed Postgres's 1 MB tsvector limit.
 struct AddEpisodeSearchIndex: AsyncMigration {
-    func prepare(on database: any Database) async throws {
-        // The plain-text transcript column exists on every backend (SQLite tests
-        // included) so the search code can use a single column.
-        try await database.schema("episodes")
-            .field("transcript_text", .string)
-            .update()
+    // Bound the transcript text fed into the tsvector (600k characters) so the
+    // vector stays well under Postgres's 1 MB limit even for very long episodes;
+    // this covers essentially every episode in full.
 
+    func prepare(on database: any Database) async throws {
         guard let sql = database as? any SQLDatabase, sql.dialect.name == "postgresql" else {
+            // SQLite (tests): a plain column is all the fallback search needs.
+            try await database.schema("episodes")
+                .field("transcript_text", .string)
+                .update()
             return
         }
 
-        // Backfill transcript_text from the most recent transcript per episode
-        // before the generated column is created so existing transcripts are
-        // immediately searchable.
+        try await sql.raw("ALTER TABLE episodes ADD COLUMN IF NOT EXISTS transcript_text text").run()
+
+        // Backfill transcript_text from the most recent transcript per episode so
+        // existing transcripts are immediately searchable.
         try await backfillTranscriptText(on: sql)
 
+        // Recreate the generated column unconditionally so we always end up with
+        // the size-safe definition, regardless of any earlier partial attempt.
+        try await sql.raw("ALTER TABLE episodes DROP COLUMN IF EXISTS search_vector").run()
         try await sql.raw("""
-        ALTER TABLE episodes ADD COLUMN IF NOT EXISTS search_vector tsvector
+        ALTER TABLE episodes ADD COLUMN search_vector tsvector
             GENERATED ALWAYS AS (
                 setweight(to_tsvector('english', coalesce(title, '')), 'A') ||
                 setweight(to_tsvector('english', coalesce(summary, '')), 'B') ||
-                setweight(to_tsvector('english', coalesce(transcript_text, '')), 'C')
+                setweight(strip(to_tsvector('english', left(coalesce(transcript_text, ''), 600000))), 'C')
             ) STORED
         """).run()
 
@@ -42,6 +53,8 @@ struct AddEpisodeSearchIndex: AsyncMigration {
         if let sql = database as? any SQLDatabase, sql.dialect.name == "postgresql" {
             try await sql.raw("DROP INDEX IF EXISTS episodes_search_vector_idx").run()
             try await sql.raw("ALTER TABLE episodes DROP COLUMN IF EXISTS search_vector").run()
+            try await sql.raw("ALTER TABLE episodes DROP COLUMN IF EXISTS transcript_text").run()
+            return
         }
         try await database.schema("episodes")
             .deleteField("transcript_text")

@@ -172,17 +172,22 @@ final class SearchViewController: UITableViewController, UISearchResultsUpdating
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         switch indexPath.section {
         case 0:
-            if indexPath.row == visiblePodcastResults.count, podcastResults.count > visiblePodcastResults.count {
+            // Snapshot the computed results once; an interleaved async update
+            // (search results, popular load) can otherwise change the count
+            // between numberOfRows and cellForRow and make the index invalid.
+            let visible = visiblePodcastResults
+            if indexPath.row >= visible.count {
+                let remaining = max(0, podcastResults.count - visible.count)
                 let cell = UITableViewCell(style: .default, reuseIdentifier: nil)
                 var configuration = UIListContentConfiguration.cell()
-                configuration.text = "Show \(podcastResults.count - visiblePodcastResults.count) More Podcasts"
+                configuration.text = "Show \(remaining) More Podcasts"
                 configuration.image = UIImage(systemName: "chevron.down.circle")
                 configuration.textProperties.color = .systemOrange
                 cell.contentConfiguration = configuration
                 return cell
             }
 
-            let result = visiblePodcastResults[indexPath.row]
+            let result = visible[indexPath.row]
             switch result {
             case .known(let podcast):
                 let cell = tableView.dequeueReusableCell(withIdentifier: SearchPodcastCell.reuseIdentifier, for: indexPath) as! SearchPodcastCell
@@ -213,17 +218,19 @@ final class SearchViewController: UITableViewController, UISearchResultsUpdating
     override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
         if indexPath.section == 0 {
-            if indexPath.row == visiblePodcastResults.count,
-               podcastResults.count > visiblePodcastResults.count {
-                showAllPodcasts = true
-                tableView.reloadSections(IndexSet(integer: 0), with: .automatic)
+            let visible = visiblePodcastResults
+            guard indexPath.row < visible.count else {
+                if podcastResults.count > visible.count {
+                    showAllPodcasts = true
+                    tableView.reloadSections(IndexSet(integer: 0), with: .automatic)
+                }
                 return
             }
-            openPreview(for: visiblePodcastResults[indexPath.row])
+            openPreview(for: visible[indexPath.row])
             return
         }
 
-        guard indexPath.section == 1 else { return }
+        guard indexPath.section == 1, indexPath.row < visibleEpisodeSnapshot.count else { return }
         let episode = visibleEpisodeSnapshot[indexPath.row]
         navigationController?.pushViewController(EpisodeDetailViewController(episode: episode, modelContext: modelContext, player: player), animated: true)
     }

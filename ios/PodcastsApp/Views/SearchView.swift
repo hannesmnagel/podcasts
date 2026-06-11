@@ -232,7 +232,18 @@ final class SearchViewController: UITableViewController, UISearchResultsUpdating
 
         guard indexPath.section == 1, indexPath.row < visibleEpisodeSnapshot.count else { return }
         let episode = visibleEpisodeSnapshot[indexPath.row]
-        navigationController?.pushViewController(EpisodeDetailViewController(episode: episode, modelContext: modelContext, player: player), animated: true)
+        pushDetail(EpisodeDetailViewController(episode: episode, modelContext: modelContext, player: player))
+    }
+
+    /// Pushes a detail screen. On Mac Catalyst the search tab keeps its
+    /// navigation bar hidden (for the custom search header), which would leave
+    /// pushed screens without a back button — so reveal it before pushing. It is
+    /// hidden again when the search list reappears on pop (viewWillAppear).
+    private func pushDetail(_ viewController: UIViewController) {
+        #if targetEnvironment(macCatalyst)
+        navigationController?.setNavigationBarHidden(false, animated: false)
+        #endif
+        navigationController?.pushViewController(viewController, animated: true)
     }
 
     private func openPreview(for result: PodcastSearchResult) {
@@ -242,7 +253,7 @@ final class SearchViewController: UITableViewController, UISearchResultsUpdating
         case .directory(let podcast): identity = .init(directory: podcast)
         }
         let preview = PodcastPreviewViewController(identity: identity, modelContext: modelContext, player: player)
-        navigationController?.pushViewController(preview, animated: true)
+        pushDetail(preview)
     }
 
     private func submitSearch() async {

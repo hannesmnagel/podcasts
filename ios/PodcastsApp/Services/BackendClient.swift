@@ -129,6 +129,14 @@ struct BackendClient: Sendable {
     /// and returns its episodes, without subscribing the user locally. Used to
     /// preview a show's episodes before adding it.
     func previewEpisodes(feedURL: URL) async throws -> (podcast: PodcastDTO, episodes: [EpisodeDTO]) {
+        let stableID = StableID.podcastID(feedURL: feedURL)
+        // Fast path: an already-crawled podcast (e.g. a popular show) has episodes
+        // ready, so a single request returns them — no add/crawl round trips. The
+        // header falls back to the caller's known title/artwork/description.
+        if let existing = try? await episodes(for: stableID), !existing.isEmpty {
+            return (optimisticPodcast(feedURL: feedURL), existing)
+        }
+
         let added = try await addPodcast(feedURL: feedURL)
         await requestPodcastCrawl(added.stableID)
         var podcast = added

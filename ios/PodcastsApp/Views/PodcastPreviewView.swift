@@ -42,14 +42,18 @@ final class PodcastPreviewViewController: UITableViewController {
     private let client = BackendClient()
     private var identity: Identity
     private let headerView = PreviewHeaderView()
+    private let libraryStoreActor: LibraryStoreActor
     private var episodes: [EpisodeDTO] = []
     private var savedEpisodeIDs: Set<String> = []
+    private var summarySnippets: [String: String] = [:]
+    private var artworkURLs: [String: URL] = [:]
     private var isLoading = true
 
     init(identity: Identity, modelContext: ModelContext, player: PlayerController) {
         self.identity = identity
         self.modelContext = modelContext
         self.player = player
+        self.libraryStoreActor = LibraryStoreActor(modelContainer: modelContext.container)
         super.init(style: .plain)
         title = identity.title
     }
@@ -111,24 +115,36 @@ final class PodcastPreviewViewController: UITableViewController {
         isLoading = true
         updateBackground()
         let result = try? await client.previewEpisodes(feedURL: identity.feedURL)
-        if let result {
-            episodes = result.episodes
-            // Hydrate header metadata (description/artwork) from the crawled feed.
-            identity = Identity(
-                stableID: result.podcast.stableID,
-                feedURL: identity.feedURL,
-                title: result.podcast.title.isEmpty ? identity.title : result.podcast.title,
-                artworkURL: result.podcast.imageURL.flatMap(URL.init(string:)) ?? identity.artworkURL,
-                description: result.podcast.description ?? identity.description
-            )
-            headerView.configure(identity: identity, isSubscribed: isSubscribed)
-            sizeHeaderToFit()
-            await LibraryStore.cacheEpisodes(episodes, in: modelContext)
+        guard let result else {
+            isLoading = false
+            updateBackground()
+            return
         }
+
+        // Show the episodes immediately using the server payload (title, summary,
+        // artwork) — no DB work blocks first paint.
+        episodes = result.episodes
+        identity = Identity(
+            stableID: result.podcast.stableID,
+            feedURL: identity.feedURL,
+            title: result.podcast.title.isEmpty ? identity.title : result.podcast.title,
+            artworkURL: result.podcast.imageURL.flatMap(URL.init(string:)) ?? identity.artworkURL,
+            description: result.podcast.description ?? identity.description
+        )
+        headerView.configure(identity: identity, isSubscribed: isSubscribed)
+        sizeHeaderToFit()
         isLoading = false
         loadSavedState()
         tableView.reloadData()
         updateBackground()
+
+        // Enrich (cache + stripped summaries + cached artwork) off the main
+        // thread, then refresh once. This never blocks scrolling.
+        await libraryStoreActor.cacheEpisodes(episodes)
+        let displayData = await libraryStoreActor.fetchDisplayData(for: episodes)
+        summarySnippets = displayData.summarySnippets
+        artworkURLs = displayData.artworkURLs
+        tableView.reloadData()
     }
 
     private func updateBackground() {
@@ -157,8 +173,8 @@ final class PodcastPreviewViewController: UITableViewController {
         let isCurrentPlaying = player.currentEpisode?.stableID == episode.stableID && player.isPlaying
         cell.configure(
             episode: episode,
-            summaryText: LibraryStore.summarySnippets(for: [episode], in: modelContext)[episode.stableID] ?? episode.summary,
-            artworkURL: LibraryStore.localArtworkURL(for: episode, in: modelContext) ?? identity.artworkURL,
+            summaryText: summarySnippets[episode.stableID] ?? episode.summary,
+            artworkURL: artworkURLs[episode.stableID] ?? episode.imageURL.flatMap(URL.init(string:)) ?? identity.artworkURL,
             isPlayed: false,
             dimsPlayed: false,
             isCurrentPlaying: isCurrentPlaying

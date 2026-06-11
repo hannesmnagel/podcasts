@@ -153,6 +153,8 @@ struct TranscriptAlignmentResult {
 }
 
 enum TranscriptAligner {
+    static let algorithmVersion = "2"
+
     static func alignedSegmentsJSON(transcriptSegmentsJSON: String, segmentFingerprintsJSON: String?, backendFingerprint: AudioFingerprintDTO, localFingerprint: AudioFingerprintUpload) -> TranscriptAlignmentResult? {
         guard backendFingerprint.algorithm == AudioFingerprintMaker.algorithm,
               backendFingerprint.algorithm == localFingerprint.algorithm,
@@ -315,12 +317,34 @@ enum TranscriptAligner {
     }
 
     private static func offsetNear(start: TimeInterval, matches: [(backend: AudioFingerprintChunk, local: AudioFingerprintChunk)], tolerance: TimeInterval) -> TimeInterval? {
-        guard matches.count >= 3,
-              let match = matches.min(by: { abs($0.backend.start - start) < abs($1.backend.start - start) }),
-              abs(match.backend.start - start) <= tolerance else {
+        guard matches.count >= 3 else { return nil }
+        let sorted = matches.sorted { $0.backend.start < $1.backend.start }
+
+        // Fast path: high-confidence match within tolerance window
+        let nearest = sorted.min(by: { abs($0.backend.start - start) < abs($1.backend.start - start) })!
+        if abs(nearest.backend.start - start) <= tolerance {
+            return nearest.local.start - nearest.backend.start
+        }
+
+        // Interpolate between surrounding matches, or extrapolate from boundary.
+        // This handles DAI episodes where matched chunks only cover part of the timeline.
+        let lower = sorted.last(where: { $0.backend.start <= start })
+        let upper = sorted.first(where: { $0.backend.start > start })
+        switch (lower, upper) {
+        case let (l?, u?):
+            let span = u.backend.start - l.backend.start
+            guard span > 0 else { return l.local.start - l.backend.start }
+            let t = (start - l.backend.start) / span
+            let lo = l.local.start - l.backend.start
+            let hi = u.local.start - u.backend.start
+            return lo + t * (hi - lo)
+        case let (l?, nil):
+            return l.local.start - l.backend.start
+        case let (nil, u?):
+            return u.local.start - u.backend.start
+        default:
             return nil
         }
-        return match.local.start - match.backend.start
     }
 
     private static func offset(for segment: TranscriptSegmentFingerprint, localByHash: [String: [AudioFingerprintChunk]], tolerance: TimeInterval, fallbackOffset: TimeInterval?) -> TimeInterval? {

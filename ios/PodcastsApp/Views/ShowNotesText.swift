@@ -118,7 +118,6 @@ private extension ShowNotesText {
           <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
           <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline';">
           <style>
-            :root { color-scheme: dark; }
             body {
               margin: 0;
               font: -apple-system-body;
@@ -264,17 +263,15 @@ private final class AutoSizingTextWebView: UIView, WKNavigationDelegate, UIScrol
     }
 }
 
-private final class CollapsibleLinkedTextView: UIView, UIGestureRecognizerDelegate {
+private final class CollapsibleLinkedTextView: UIView {
     private let textView = UITextView()
+    private let showMoreButton = UIButton(type: .system)
     private let maxCollapsedLines: Int
     private let onExpansionChange: (() -> Void)?
-    private let tapGesture: UITapGestureRecognizer
-    private var isExpanded = false
 
     init(raw: String, font: UIFont, textColor: UIColor, secondaryColor: UIColor, maxCollapsedLines: Int, onExpansionChange: (() -> Void)?) {
         self.maxCollapsedLines = maxCollapsedLines
         self.onExpansionChange = onExpansionChange
-        self.tapGesture = UITapGestureRecognizer()
         super.init(frame: .zero)
 
         var linked = ShowNotesProcessor.linkedText(raw)
@@ -286,7 +283,7 @@ private final class CollapsibleLinkedTextView: UIView, UIGestureRecognizerDelega
         textView.backgroundColor = .clear
         textView.isEditable = false
         textView.isScrollEnabled = false
-        textView.isSelectable = false
+        textView.isSelectable = true
         textView.textContainerInset = .zero
         textView.textContainer.lineFragmentPadding = 0
         textView.adjustsFontForContentSizeCategory = true
@@ -294,14 +291,23 @@ private final class CollapsibleLinkedTextView: UIView, UIGestureRecognizerDelega
         textView.linkTextAttributes = [.foregroundColor: UIColor.systemOrange]
         textView.textContainer.maximumNumberOfLines = maxCollapsedLines
         textView.textContainer.lineBreakMode = .byTruncatingTail
-        tapGesture.addTarget(self, action: #selector(expandText))
-        tapGesture.cancelsTouchesInView = false
-        tapGesture.delegate = self
-        addGestureRecognizer(tapGesture)
 
-        let stack = UIStackView(arrangedSubviews: [textView])
+        var config = UIButton.Configuration.plain()
+        config.title = "Show more"
+        config.image = UIImage(systemName: "chevron.down", withConfiguration: UIImage.SymbolConfiguration(scale: .small))
+        config.imagePlacement = .trailing
+        config.imagePadding = 4
+        config.baseForegroundColor = .systemOrange
+        config.contentInsets = .zero
+        showMoreButton.configuration = config
+        showMoreButton.translatesAutoresizingMaskIntoConstraints = false
+        showMoreButton.addAction(UIAction { [weak self] _ in self?.expand() }, for: .touchUpInside)
+
+        let stack = UIStackView(arrangedSubviews: [textView, showMoreButton])
         stack.translatesAutoresizingMaskIntoConstraints = false
         stack.axis = .vertical
+        stack.alignment = .leading
+        stack.spacing = 4
         addSubview(stack)
 
         NSLayoutConstraint.activate([
@@ -317,7 +323,7 @@ private final class CollapsibleLinkedTextView: UIView, UIGestureRecognizerDelega
         let fullHeight = textView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude)).height
         if fullHeight <= collapsedHeight + 4 {
             textView.textContainer.maximumNumberOfLines = 0
-            isExpanded = true
+            showMoreButton.isHidden = true
         }
     }
 
@@ -325,42 +331,20 @@ private final class CollapsibleLinkedTextView: UIView, UIGestureRecognizerDelega
         fatalError("init(coder:) has not been implemented")
     }
 
-    @objc private func expandText() {
-        guard !isExpanded else { return }
-        isExpanded = true
+    private func expand() {
         textView.textContainer.maximumNumberOfLines = 0
-        textView.isSelectable = true
+        textView.invalidateIntrinsicContentSize()
+        textView.setNeedsLayout()
+        showMoreButton.isHidden = true
         invalidateIntrinsicContentSize()
-        superview?.setNeedsLayout()
+        // Walk up the hierarchy to find a scroll view and trigger a full relayout
+        var view: UIView? = superview
+        while let v = view {
+            v.setNeedsLayout()
+            if v is UIScrollView { break }
+            view = v.superview
+        }
         superview?.layoutIfNeeded()
         onExpansionChange?()
-    }
-
-    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
-        guard !isExpanded, gestureRecognizer === tapGesture else { return false }
-        guard let tappedView = touch.view else { return true }
-        let pointInTextView = tappedView.convert(touch.location(in: tappedView), to: textView)
-        guard pointInTextView.x >= 0,
-              pointInTextView.y >= 0,
-              pointInTextView.x <= textView.bounds.width,
-              pointInTextView.y <= textView.bounds.height else {
-            return true
-        }
-
-        let adjusted = CGPoint(
-            x: pointInTextView.x - textView.textContainerInset.left,
-            y: pointInTextView.y - textView.textContainerInset.top
-        )
-        let glyphIndex = textView.layoutManager.glyphIndex(
-            for: adjusted,
-            in: textView.textContainer,
-            fractionOfDistanceThroughGlyph: nil
-        )
-        let characterIndex = textView.layoutManager.characterIndexForGlyph(at: glyphIndex)
-        if characterIndex < textView.textStorage.length,
-           textView.textStorage.attribute(.link, at: characterIndex, effectiveRange: nil) != nil {
-            return false
-        }
-        return true
     }
 }

@@ -11,12 +11,13 @@ enum EpisodeListMode {
 }
 
 class EpisodeListViewController: UITableViewController {
-    private var mode: EpisodeListMode
+    var mode: EpisodeListMode
     private let modelContext: ModelContext
     private let player: PlayerController
     private let client = BackendClient()
+    private let libraryStoreActor: LibraryStoreActor
     private var episodes: [EpisodeDTO] = []
-    private var visibleEpisodeSnapshot: [EpisodeDTO] = []
+    var visibleEpisodeSnapshot: [EpisodeDTO] = []
     private var playedEpisodeIDs: Set<String> = []
     private var deletedEpisodeIDs: Set< String> = []
     private var downloadedEpisodeIDs: Set<String> = []
@@ -34,6 +35,7 @@ class EpisodeListViewController: UITableViewController {
         self.mode = mode
         self.modelContext = modelContext
         self.player = player
+        self.libraryStoreActor = LibraryStoreActor(modelContainer: modelContext.container)
         super.init(style: .plain)
         self.title = title.isEmpty ? "Episodes" : title
     }
@@ -54,6 +56,9 @@ class EpisodeListViewController: UITableViewController {
         tableView.allowsSelectionDuringEditing = true
         tableView.allowsMultipleSelection = true
         tableView.allowsMultipleSelectionDuringEditing = true
+        tableView.dragDelegate = self
+        tableView.dropDelegate = self
+        tableView.dragInteractionEnabled = true
         configureNavigationItems()
         bindDownloadProgressNavigationItem()
         bindPlayerState()
@@ -98,7 +103,7 @@ class EpisodeListViewController: UITableViewController {
         cell.configure(
             episode: episode,
             summaryText: summarySnippets[episode.stableID] ?? episode.summary,
-            artworkURL: artworkURLs[episode.stableID] ?? LibraryStore.localArtworkURL(for: episode, in: modelContext),
+            artworkURL: artworkURLs[episode.stableID],
             isPlayed: playedEpisodeIDs.contains(episode.stableID),
             dimsPlayed: showsPlayedEpisodes,
             isCurrentPlaying: isCurrentPlaying
@@ -159,7 +164,7 @@ class EpisodeListViewController: UITableViewController {
                 self.showProgressFooter(for: episode.stableID)
                 Task {
                     await LibraryStore.downloadAudio(for: episode, in: self.modelContext)
-                    self.refreshEpisodeStateSets()
+                    await self.refreshStateCacheAndEpisodeSets()
                     self.tableView.reloadData()
                 }
             }
@@ -206,17 +211,20 @@ class EpisodeListViewController: UITableViewController {
                     self.showProgressFooter(for: episode.stableID)
                     Task {
                         await LibraryStore.downloadAudio(for: episode, in: self.modelContext)
-                        self.refreshEpisodeStateSets()
+                        await self.refreshStateCacheAndEpisodeSets()
                         self.tableView.reloadData()
                     }
                 })
             }
             actions.append(UIAction(title: "Hide Episode", image: UIImage(systemName: "eye.slash"), attributes: .destructive) { _ in
                 LibraryStore.markDeleted(episode, in: self.modelContext)
-                self.refreshEpisodeStateSets()
-                self.refreshVisibleEpisodeSnapshot()
-                self.tableView.reloadData()
-                self.updateEmptyState()
+                Task { [weak self] in
+                    guard let self else { return }
+                    await self.refreshEpisodeStateSets()
+                    self.refreshVisibleEpisodeSnapshot()
+                    self.tableView.reloadData()
+                    self.updateEmptyState()
+                }
             })
             return UIMenu(children: actions)
         })
@@ -373,10 +381,10 @@ class EpisodeListViewController: UITableViewController {
             updateEmptyState()
         }
 
-        let cached = cachedEpisodes()
+        let cached = await cachedEpisodes()
         if !cached.isEmpty {
             episodes = cached
-            refreshEpisodeStateSets()
+            await refreshEpisodeStateSets()
             refreshVisibleEpisodeSnapshot()
             tableView.reloadData()
             updateSelectionToolbar()
@@ -385,7 +393,7 @@ class EpisodeListViewController: UITableViewController {
         do {
             await refreshPodcastMetadataIfNeeded()
             episodes = try await loadEpisodes()
-            refreshEpisodeStateSets()
+            await refreshEpisodeStateSets()
             refreshVisibleEpisodeSnapshot()
             configurePodcastHeaderIfNeeded()
             tableView.reloadData()
@@ -393,14 +401,14 @@ class EpisodeListViewController: UITableViewController {
             configureNavigationItems()
             await applyDownloadPolicyIfNeeded()
         } catch BackendError.notFound where isPodcastMode {
-            episodes = LibraryStore.localEpisodes(forPodcastIDs: podcastModeIDs, in: modelContext)
-            refreshEpisodeStateSets()
+            episodes = await libraryStoreActor.fetchLocalEpisodes(forPodcastIDs: podcastModeIDs)
+            await refreshEpisodeStateSets()
             refreshVisibleEpisodeSnapshot()
             tableView.reloadData()
             updateSelectionToolbar()
         } catch BackendError.server(let status, _) where isPodcastMode && status == 502 {
-            episodes = LibraryStore.localEpisodes(forPodcastIDs: podcastModeIDs, in: modelContext)
-            refreshEpisodeStateSets()
+            episodes = await libraryStoreActor.fetchLocalEpisodes(forPodcastIDs: podcastModeIDs)
+            await refreshEpisodeStateSets()
             refreshVisibleEpisodeSnapshot()
             tableView.reloadData()
             updateSelectionToolbar()
@@ -415,19 +423,19 @@ class EpisodeListViewController: UITableViewController {
             await client.requestPodcastCrawl(podcastID)
             do {
                 let fetched = try await client.fetchAllEpisodes(for: podcastID)
-                await LibraryStore.cacheEpisodes(fetched, in: modelContext)
+                await libraryStoreActor.cacheEpisodes(fetched)
             } catch BackendError.notFound {
                 // Newly added optimistic subscriptions can be opened before the
                 // backend has created/crawled the feed. Show an empty detail
                 // instead of an error; a later refresh will hydrate episodes.
             }
-            return LibraryStore.localEpisodes(forPodcastIDs: [podcastID], in: modelContext)
+            return await libraryStoreActor.fetchLocalEpisodes(forPodcastIDs: [podcastID])
         case .subscriptions(let podcastIDs):
             return try await loadSubscriptions(podcastIDs)
         case .search(let query):
             let fetched = try await client.search(query).episodes
-            await LibraryStore.cacheEpisodes(fetched, in: modelContext)
-            return LibraryStore.localEpisodes(matching: query, in: modelContext)
+            await libraryStoreActor.cacheEpisodes(fetched)
+            return await libraryStoreActor.fetchLocalEpisodes(matching: query)
         case .placeholder:
             return []
         }
@@ -441,12 +449,10 @@ class EpisodeListViewController: UITableViewController {
                     return (podcastID, try await self.client.fetchAllEpisodes(for: podcastID))
                 }
             }
-            var fetched: [EpisodeDTO] = []
             for try await (_, podcastEpisodes) in group {
-                await LibraryStore.cacheEpisodes(podcastEpisodes, in: modelContext)
-                fetched += podcastEpisodes
+                await libraryStoreActor.cacheEpisodes(podcastEpisodes)
             }
-            return LibraryStore.localEpisodes(forPodcastIDs: podcastIDs, in: modelContext)
+            return await libraryStoreActor.fetchLocalEpisodes(forPodcastIDs: podcastIDs)
         }
     }
 
@@ -457,29 +463,33 @@ class EpisodeListViewController: UITableViewController {
         configurePodcastHeaderIfNeeded()
     }
 
-    private func cachedEpisodes() -> [EpisodeDTO] {
+    private func cachedEpisodes() async -> [EpisodeDTO] {
         switch mode {
         case .podcast(let podcastID):
-            LibraryStore.localEpisodes(forPodcastIDs: [podcastID], in: modelContext)
+            return await libraryStoreActor.fetchLocalEpisodes(forPodcastIDs: [podcastID])
         case .subscriptions(let podcastIDs):
-            LibraryStore.localEpisodes(forPodcastIDs: podcastIDs, in: modelContext)
+            return await libraryStoreActor.fetchLocalEpisodes(forPodcastIDs: podcastIDs)
         case .search(let query):
-            LibraryStore.localEpisodes(matching: query, in: modelContext)
+            return await libraryStoreActor.fetchLocalEpisodes(matching: query)
         case .placeholder:
-            []
+            return []
         }
     }
 
-    private func refreshEpisodeStateSets() {
-        let sets = LibraryStore.episodeIDSets(for: episodes, in: modelContext)
-        playedEpisodeIDs = sets.played
-        deletedEpisodeIDs = sets.deleted
-        downloadedEpisodeIDs = sets.downloaded
-        summarySnippets = LibraryStore.summarySnippets(for: episodes, in: modelContext)
-        artworkURLs = LibraryStore.artworkURLs(for: episodes, in: modelContext)
+    private func refreshEpisodeStateSets() async {
+        let data = await libraryStoreActor.fetchDisplayData(for: episodes)
+        playedEpisodeIDs = data.playedIDs
+        deletedEpisodeIDs = data.deletedIDs
+        downloadedEpisodeIDs = data.downloadedIDs
+        summarySnippets = data.summarySnippets
+        artworkURLs = data.artworkURLs
     }
 
-    private func refreshVisibleEpisodeSnapshot() {
+    private func refreshStateCacheAndEpisodeSets() async {
+        await refreshEpisodeStateSets()
+    }
+
+    func refreshVisibleEpisodeSnapshot() {
         visibleEpisodeSnapshot = episodes.filter { !deletedEpisodeIDs.contains($0.stableID) && (showsPlayedEpisodes || !playedEpisodeIDs.contains($0.stableID)) }
     }
 
@@ -498,7 +508,7 @@ class EpisodeListViewController: UITableViewController {
                 }
                 let start = LibraryStore.playbackPosition(for: playableEpisode, in: self.modelContext)
                 self.player.play(playableEpisode, at: start, artworkURL: LibraryStore.localArtworkURL(for: playableEpisode, in: self.modelContext))
-                self.refreshEpisodeStateSets()
+                await self.refreshStateCacheAndEpisodeSets()
                 self.tableView.reloadData()
             }
         }
@@ -639,7 +649,7 @@ class EpisodeListViewController: UITableViewController {
                 await LibraryStore.downloadAudio(for: episode, in: modelContext)
                 await Task.yield()
             }
-            refreshEpisodeStateSets()
+            await refreshStateCacheAndEpisodeSets()
             tableView.reloadData()
             updateSelectionToolbar()
         }
@@ -648,25 +658,34 @@ class EpisodeListViewController: UITableViewController {
     @objc private func removeSelectedDownloads() {
         LibraryStore.removeDownloads(for: selectedEpisodes, in: modelContext)
         setEditing(false, animated: true)
-        refreshEpisodeStateSets()
-        tableView.reloadData()
-        updateEmptyState()
+        Task { [weak self] in
+            guard let self else { return }
+            await self.refreshEpisodeStateSets()
+            self.tableView.reloadData()
+            self.updateEmptyState()
+        }
     }
 
     private func markAllPlayed() {
         LibraryStore.markAllPlayed(episodes, in: modelContext)
-        refreshEpisodeStateSets()
-        refreshVisibleEpisodeSnapshot()
-        tableView.reloadData()
-        updateEmptyState()
+        Task { [weak self] in
+            guard let self else { return }
+            await self.refreshEpisodeStateSets()
+            self.refreshVisibleEpisodeSnapshot()
+            self.tableView.reloadData()
+            self.updateEmptyState()
+        }
     }
 
     private func markAllUnplayed() {
         LibraryStore.markAllUnplayed(episodes, in: modelContext)
-        refreshEpisodeStateSets()
-        refreshVisibleEpisodeSnapshot()
-        tableView.reloadData()
-        updateEmptyState()
+        Task { [weak self] in
+            guard let self else { return }
+            await self.refreshEpisodeStateSets()
+            self.refreshVisibleEpisodeSnapshot()
+            self.tableView.reloadData()
+            self.updateEmptyState()
+        }
     }
 
     private func downloadAllVisible() {
@@ -676,7 +695,7 @@ class EpisodeListViewController: UITableViewController {
                 await LibraryStore.downloadAudio(for: episode, in: modelContext, progressID: "policy-\(episode.stableID)")
                 await Task.yield()
             }
-            refreshEpisodeStateSets()
+            await refreshStateCacheAndEpisodeSets()
             tableView.reloadData()
         }
     }
@@ -692,21 +711,26 @@ class EpisodeListViewController: UITableViewController {
 
     private func removeAllDownloads() {
         LibraryStore.removeDownloads(for: episodes, in: modelContext)
-        refreshEpisodeStateSets()
-        tableView.reloadData()
+        Task { [weak self] in
+            guard let self else { return }
+            await self.refreshEpisodeStateSets()
+            self.tableView.reloadData()
+        }
     }
 
     private func restoreDeletedEpisodes() {
         guard case .podcast(let podcastID) = mode else { return }
         let restored = LibraryStore.restoreDeletedEpisodes(forPodcastID: podcastID, in: modelContext)
-        refreshEpisodeStateSets()
-        refreshVisibleEpisodeSnapshot()
-        tableView.reloadData()
-        updateEmptyState()
-
-        let alert = UIAlertController(title: "Restored Episodes", message: restored == 1 ? "1 episode was restored." : "\(restored) episodes were restored.", preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: "OK", style: .default))
-        present(alert, animated: true)
+        Task { [weak self] in
+            guard let self else { return }
+            await self.refreshEpisodeStateSets()
+            self.refreshVisibleEpisodeSnapshot()
+            self.tableView.reloadData()
+            self.updateEmptyState()
+            let alert = UIAlertController(title: "Restored Episodes", message: restored == 1 ? "1 episode was restored." : "\(restored) episodes were restored.", preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "OK", style: .default))
+            self.present(alert, animated: true)
+        }
     }
 
     private func showPodcastDownloadSettings() {
@@ -733,7 +757,7 @@ class EpisodeListViewController: UITableViewController {
     private func applyDownloadPolicyIfNeeded() async {
         guard case .podcast = mode else { return }
         _ = await LibraryStore.applyDownloadPolicy(to: episodes, subscription: subscription, in: modelContext)
-        refreshEpisodeStateSets()
+        await refreshEpisodeStateSets()
         tableView.reloadData()
     }
 
@@ -800,12 +824,53 @@ class EpisodeListViewController: UITableViewController {
     }
 }
 
+extension EpisodeListViewController: UITableViewDragDelegate, UITableViewDropDelegate {
+    func tableView(_ tableView: UITableView, itemsForBeginning session: UIDragSession, at indexPath: IndexPath) -> [UIDragItem] {
+        guard self is AllEpisodesViewController else { return [] }
+        let episode = visibleEpisodeSnapshot[indexPath.row]
+        let provider = NSItemProvider(object: episode.stableID as NSString)
+        return [UIDragItem(itemProvider: provider)]
+    }
+
+    func tableView(_ tableView: UITableView, dropSessionDidUpdate session: UIDropSession, withDestinationIndexPath destinationIndexPath: IndexPath?) -> UITableViewDropProposal {
+        guard session.localDragSession != nil else { return UITableViewDropProposal(operation: .cancel) }
+        return UITableViewDropProposal(operation: .move, intent: .insertAtDestinationIndexPath)
+    }
+
+    func tableView(_ tableView: UITableView, performDropWith coordinator: UITableViewDropCoordinator) {
+        guard let destinationIndexPath = coordinator.destinationIndexPath,
+              let item = coordinator.items.first,
+              let sourceIndexPath = item.sourceIndexPath else { return }
+        tableView.performBatchUpdates {
+            let moved = visibleEpisodeSnapshot.remove(at: sourceIndexPath.row)
+            visibleEpisodeSnapshot.insert(moved, at: destinationIndexPath.row)
+            // Mirror into episodes array to keep consistent state
+            if let srcEpisodeIdx = episodes.firstIndex(where: { $0.stableID == moved.stableID }) {
+                episodes.remove(at: srcEpisodeIdx)
+                // Insert at equivalent position in full array
+                let anchorID = destinationIndexPath.row < visibleEpisodeSnapshot.count - 1
+                    ? visibleEpisodeSnapshot[destinationIndexPath.row + 1].stableID : nil
+                if let anchorID, let anchorIdx = episodes.firstIndex(where: { $0.stableID == anchorID }) {
+                    episodes.insert(moved, at: anchorIdx)
+                } else {
+                    episodes.append(moved)
+                }
+            }
+            tableView.moveRow(at: sourceIndexPath, to: destinationIndexPath)
+        }
+        coordinator.drop(item.dragItem, toRowAt: destinationIndexPath)
+        LibraryStore.setEpisodeOrder(visibleEpisodeSnapshot.map(\.stableID), in: modelContext)
+        configureNavigationItems()
+    }
+}
+
 final class PodcastDetailHeaderView: UIView {
     private let cardView = UIView()
     private let artworkView = ArtworkImageView(cornerRadius: 16)
     private let titleLabel = UILabel()
     private let feedLabel = UILabel()
     private let descriptionContainer = UIView()
+    private var lastConfiguredDescription: String?
     var contentSizeDidChange: (() -> Void)?
 
     override init(frame: CGRect) {
@@ -820,8 +885,11 @@ final class PodcastDetailHeaderView: UIView {
     func configure(subscription: PodcastSubscription?) {
         titleLabel.text = subscription?.title.isEmpty == false ? subscription?.title : "Podcast"
         feedLabel.text = subscription?.feedURL.host() ?? subscription?.feedURL.absoluteString
+        artworkView.load(url: subscription?.artworkURL)
         let description = subscription?.podcastDescription?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard description != lastConfiguredDescription else { return }
+        lastConfiguredDescription = description
         descriptionContainer.subviews.forEach { $0.removeFromSuperview() }
         let descriptionView: UIView = description.isEmpty
             ? ShowNotesText.label(html: "No podcast description saved yet.", font: .preferredFont(forTextStyle: .body))
@@ -836,7 +904,6 @@ final class PodcastDetailHeaderView: UIView {
             descriptionView.topAnchor.constraint(equalTo: descriptionContainer.topAnchor),
             descriptionView.bottomAnchor.constraint(equalTo: descriptionContainer.bottomAnchor)
         ])
-        artworkView.load(url: subscription?.artworkURL)
     }
 
     private func configure() {

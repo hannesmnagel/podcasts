@@ -92,7 +92,7 @@ final class FloatingDownloadHUD {
         NSLayoutConstraint.activate([
             hud.leadingAnchor.constraint(equalTo: window.safeAreaLayoutGuide.leadingAnchor, constant: 18),
             hud.trailingAnchor.constraint(equalTo: window.safeAreaLayoutGuide.trailingAnchor, constant: -18),
-            hud.bottomAnchor.constraint(equalTo: window.safeAreaLayoutGuide.bottomAnchor, constant: -18),
+            hud.bottomAnchor.constraint(equalTo: window.safeAreaLayoutGuide.bottomAnchor, constant: -88),
             stack.leadingAnchor.constraint(equalTo: hud.contentView.leadingAnchor, constant: 16),
             stack.trailingAnchor.constraint(equalTo: hud.contentView.trailingAnchor, constant: -16),
             stack.topAnchor.constraint(equalTo: hud.contentView.topAnchor, constant: 14),

@@ -14,25 +14,34 @@ actor BackgroundRefreshStore {
         let subscriptions = loadSubscriptionSnapshots()
         guard !subscriptions.isEmpty else { return false }
 
-        var changed = false
-        for subscription in subscriptions {
-            guard !Task.isCancelled else { return changed }
-            let stableID = subscription.stableID
-            let policy = subscription.policy
-
-            await client.requestPodcastCrawl(stableID)
-            guard let fetched = try? await client.fetchAllEpisodes(for: stableID) else {
-                await Task.yield()
-                continue
+        // Fan out network calls concurrently — no SwiftData access here
+        let fetched: [(SubscriptionSnapshot, [EpisodeDTO])] = await withTaskGroup(
+            of: (SubscriptionSnapshot, [EpisodeDTO])?.self
+        ) { group in
+            for subscription in subscriptions {
+                group.addTask {
+                    guard !Task.isCancelled else { return nil }
+                    await client.requestPodcastCrawl(subscription.stableID)
+                    guard let episodes = try? await client.fetchAllEpisodes(for: subscription.stableID) else { return nil }
+                    return (subscription, episodes)
+                }
             }
-
-            await cacheEpisodes(fetched)
-            let localEpisodes = localEpisodes(forPodcastID: stableID)
-            let downloaded = await applyDownloadPolicy(to: localEpisodes, policy: policy)
-            changed = changed || downloaded > 0 || !fetched.isEmpty
-            await Task.yield()
+            var results: [(SubscriptionSnapshot, [EpisodeDTO])] = []
+            for await result in group {
+                if let r = result { results.append(r) }
+            }
+            return results
         }
 
+        // Write results serially on the actor's context
+        var changed = false
+        for (subscription, episodes) in fetched {
+            guard !Task.isCancelled else { return changed }
+            await cacheEpisodes(episodes)
+            let local = localEpisodes(forPodcastID: subscription.stableID)
+            let downloaded = await applyDownloadPolicy(to: local, policy: subscription.policy)
+            changed = changed || downloaded > 0 || !episodes.isEmpty
+        }
         return changed
     }
 
@@ -55,7 +64,9 @@ actor BackgroundRefreshStore {
     }
 
     private func localEpisodes(forPodcastID podcastID: String) -> [EpisodeDTO] {
-        let descriptor = FetchDescriptor<LocalEpisodeState>()
+        let descriptor = FetchDescriptor<LocalEpisodeState>(
+            predicate: #Predicate { $0.podcastStableID == podcastID && !$0.isDeleted && $0.cachedAt != nil }
+        )
         let states = (try? modelContext.fetch(descriptor)) ?? []
         return states
             .filter { !$0.isDeleted && $0.podcastStableID == podcastID && $0.cachedAt != nil }
@@ -155,27 +166,32 @@ actor BackgroundRefreshStore {
     private func existingEpisodeStates(for episodeIDs: [String]) -> [String: LocalEpisodeState] {
         let wanted = Set(episodeIDs)
         guard !wanted.isEmpty else { return [:] }
-        let descriptor = FetchDescriptor<LocalEpisodeState>()
+        let ids = Array(wanted)
+        let descriptor = FetchDescriptor<LocalEpisodeState>(
+            predicate: #Predicate { ids.contains($0.episodeStableID) }
+        )
         let states = (try? modelContext.fetch(descriptor)) ?? []
-        return Dictionary(uniqueKeysWithValues: states.compactMap { state in
-            wanted.contains(state.episodeStableID) ? (state.episodeStableID, state) : nil
-        })
+        return Dictionary(uniqueKeysWithValues: states.map { ($0.episodeStableID, $0) })
     }
 
     private func downloadedEpisodeIDs(for episodes: [EpisodeDTO]) -> Set<String> {
         let ids = Set(episodes.map(\.stableID))
         guard !ids.isEmpty else { return [] }
-        let descriptor = FetchDescriptor<LocalEpisodeState>()
+        let idsArray = Array(ids)
+        let descriptor = FetchDescriptor<LocalEpisodeState>(
+            predicate: #Predicate { idsArray.contains($0.episodeStableID) && $0.isDownloaded }
+        )
         let states = (try? modelContext.fetch(descriptor)) ?? []
-        return Set(states.compactMap { state in
-            ids.contains(state.episodeStableID) && state.isDownloaded ? state.episodeStableID : nil
-        })
+        return Set(states.map(\.episodeStableID))
     }
 
     private func playedEpisodeIDs(for episodes: [EpisodeDTO]) -> Set<String> {
         let ids = Set(episodes.map(\.stableID))
         guard !ids.isEmpty else { return [] }
-        let descriptor = FetchDescriptor<LocalEpisodeState>()
+        let idsArray = Array(ids)
+        let descriptor = FetchDescriptor<LocalEpisodeState>(
+            predicate: #Predicate { idsArray.contains($0.episodeStableID) }
+        )
         let states = (try? modelContext.fetch(descriptor)) ?? []
         var played: Set<String> = []
         for state in states where ids.contains(state.episodeStableID) {

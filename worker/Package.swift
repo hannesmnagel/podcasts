@@ -12,6 +12,8 @@ let package = Package(
             .enableUpcomingFeature("ExistentialAny"),
             .enableExperimentalFeature("StrictConcurrency")
         ]),
-        .testTarget(name: "PodcastWorkerTests", dependencies: ["PodcastWorker"])
+        .testTarget(name: "PodcastWorkerTests", dependencies: ["PodcastWorker"], resources: [
+            .copy("Fixtures")
+        ])
     ]
 )

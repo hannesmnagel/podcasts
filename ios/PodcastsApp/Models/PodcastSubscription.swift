@@ -3,13 +3,13 @@ import SwiftData
 
 @Model
 final class PodcastSubscription {
-    @Attribute(.unique) var stableID: String
-    var feedURL: URL
-    var title: String
+    var stableID: String = ""
+    var feedURL: URL = URL(string: "about:blank")!
+    var title: String = ""
     var podcastDescription: String?
     var artworkURL: URL?
-    var createdAt: Date
-    var sortIndex: Int
+    var createdAt: Date = Date()
+    var sortIndex: Int = 0
     var downloadPolicyRawValue: String?
     var playbackSpeed: Double?
 

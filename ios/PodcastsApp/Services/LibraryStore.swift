@@ -95,7 +95,7 @@ enum LibraryStore {
         state.duration = knownDuration
         state.lastListenedAt = .now
         UserDefaults.standard.set(episode.stableID, forKey: lastPlaybackEpisodeIDKey)
-        try? context.save()
+        // No explicit save — SwiftData autosave flushes this; explicit save only on app background.
     }
 
     static func lastPlaybackEpisode(in context: ModelContext) -> EpisodeDTO? {
@@ -111,6 +111,7 @@ enum LibraryStore {
         state.duration = knownDuration
         state.lastListenedAt = .now
         try? context.save()
+        Task { @MainActor in EventLogger.shared?.log(kind: AppEvent.Kind.markPlayed, episode: episode) }
     }
 
     static func finishNaturalPlayback(_ episode: EpisodeDTO, in context: ModelContext) {
@@ -136,6 +137,7 @@ enum LibraryStore {
         state.duration = episode.duration ?? state.duration
         state.lastListenedAt = nil
         try? context.save()
+        Task { @MainActor in EventLogger.shared?.log(kind: AppEvent.Kind.markUnplayed, episode: episode) }
     }
 
     static func isPlayed(_ episode: EpisodeDTO, in context: ModelContext) -> Bool {
@@ -152,12 +154,15 @@ enum LibraryStore {
         state.deletedAt = .now
         state.isDownloaded = false
         state.downloadedFileURL = nil
+        try? context.save()
+        Task { @MainActor in EventLogger.shared?.log(kind: AppEvent.Kind.hide, episode: episode) }
     }
 
     static func restoreDeleted(_ episode: EpisodeDTO, in context: ModelContext) {
         guard let state = episodeState(for: episode, in: context) else { return }
         state.isDeleted = false
         state.deletedAt = nil
+        Task { @MainActor in EventLogger.shared?.log(kind: AppEvent.Kind.restore, episode: episode) }
     }
 
     static func isDeleted(_ episode: EpisodeDTO, in context: ModelContext) -> Bool {
@@ -168,37 +173,38 @@ enum LibraryStore {
     static func downloadAudio(for episode: EpisodeDTO, in context: ModelContext, progressID: String? = nil) async -> Bool {
         guard let remoteURL = URL(string: episode.audioURL) else { return false }
         let state = episodeState(for: episode, in: context) ?? makeEpisodeState(for: episode, in: context)
-        let progressID = progressID ?? episode.stableID
-        await MainActor.run {
-            DownloadProgressCenter.shared.begin(id: progressID, title: episode.title)
-        }
+
+        // Already a local file — mark downloaded silently, no HUD, no event
         if remoteURL.isFileURL, FileManager.default.fileExists(atPath: remoteURL.path) {
             state.downloadedFileURL = remoteURL
             state.isDownloaded = true
             try? context.save()
+            Task { try? await BackendClient().requestArtifacts(for: episode.stableID) }
             return true
         }
 
+        // Already in cache — mark downloaded silently, no HUD, no event
         if let cachedURL = await LocalMediaCache.existingCachedFileURL(for: remoteURL) {
             state.downloadedFileURL = cachedURL
             state.isDownloaded = true
             try? context.save()
-            await MainActor.run {
-                DownloadProgressCenter.shared.finish(id: progressID)
-            }
+            Task { try? await BackendClient().requestArtifacts(for: episode.stableID) }
             return true
         }
 
+        // Actual network download — show HUD and log
+        let progressID = progressID ?? episode.stableID
+        await MainActor.run { DownloadProgressCenter.shared.begin(id: progressID, title: episode.title) }
         do {
             let localURL = try await LocalMediaCache.cachedOrDownload(remoteURL, progressID: progressID)
             state.downloadedFileURL = localURL
             state.isDownloaded = true
             try? context.save()
+            Task { try? await BackendClient().requestArtifacts(for: episode.stableID) }
+            Task { @MainActor in EventLogger.shared?.log(kind: AppEvent.Kind.download, episode: episode) }
             return true
         } catch {
-            await MainActor.run {
-                DownloadProgressCenter.shared.fail(id: progressID)
-            }
+            await MainActor.run { DownloadProgressCenter.shared.fail(id: progressID) }
             #if DEBUG
             print("[PodcastsDebug][Download] failed id=\(episode.stableID) url=\(episode.audioURL) error=\(error)")
             #endif
@@ -222,17 +228,19 @@ enum LibraryStore {
     }
 
     static func downloadedEpisode(for episode: EpisodeDTO, in context: ModelContext) -> EpisodeDTO? {
+        if let state = episodeState(for: episode, in: context) {
+            guard state.isDownloaded,
+                  let downloadedFileURL = state.downloadedFileURL,
+                  FileManager.default.fileExists(atPath: downloadedFileURL.path) else {
+                return nil
+            }
+            return state.episodeDTO(preferDownloadedFile: true)
+        }
+        // No state record — fall back to checking if audioURL is already a local file
         if let url = URL(string: episode.audioURL), url.isFileURL, FileManager.default.fileExists(atPath: url.path) {
             return episode
         }
-
-        guard let state = episodeState(for: episode, in: context),
-              state.isDownloaded,
-              let downloadedFileURL = state.downloadedFileURL,
-              FileManager.default.fileExists(atPath: downloadedFileURL.path) else {
-            return nil
-        }
-        return state.episodeDTO(preferDownloadedFile: true)
+        return nil
     }
 
     static func removeDownload(for episode: EpisodeDTO, in context: ModelContext) {
@@ -245,6 +253,7 @@ enum LibraryStore {
             Task { await LocalMediaCache.removeFileIfPresent(at: localURL) }
         }
         try? context.save()
+        Task { @MainActor in EventLogger.shared?.log(kind: AppEvent.Kind.deleteDownload, episode: episode) }
     }
 
     static func removeDownloads(for episodes: [EpisodeDTO], in context: ModelContext) {
@@ -323,16 +332,18 @@ enum LibraryStore {
             $0.isDeleted = false
             $0.deletedAt = nil
         }
+        try? context.save()
         return matching.count
     }
 
     static func visibleEpisodes(_ episodes: [EpisodeDTO], in context: ModelContext) -> [EpisodeDTO] {
-        episodes.filter { !isDeleted($0, in: context) }
+        let deletedIDs = episodeIDSets(for: episodes, in: context).deleted
+        return episodes.filter { !deletedIDs.contains($0.stableID) }
     }
 
     static func unplayedEpisodes(_ episodes: [EpisodeDTO], in context: ModelContext) -> [EpisodeDTO] {
-        let playedIDs = playedEpisodeIDs(for: episodes, in: context)
-        return visibleEpisodes(episodes, in: context).filter { !playedIDs.contains($0.stableID) }
+        let sets = episodeIDSets(for: episodes, in: context)
+        return episodes.filter { !sets.deleted.contains($0.stableID) && !sets.played.contains($0.stableID) }
     }
 
     static func playedEpisodeIDs(for episodes: [EpisodeDTO], in context: ModelContext) -> Set<String> {
@@ -346,8 +357,10 @@ enum LibraryStore {
     static func episodeIDSets(for episodes: [EpisodeDTO], in context: ModelContext) -> (played: Set<String>, deleted: Set<String>, downloaded: Set<String>) {
         let episodeIDs = Set(episodes.map(\.stableID))
         guard !episodeIDs.isEmpty else { return ([], [], []) }
-        let descriptor = FetchDescriptor<LocalEpisodeState>()
-        let states = (try? context.fetch(descriptor)) ?? []
+        // SwiftData cannot translate Array.contains into a SQL IN clause — it falls back to
+        // fetching all rows and evaluating the predicate in-process (O(N×M)). Fetching all
+        // LocalEpisodeState rows explicitly and filtering with a Set is faster.
+        let states = (try? context.fetch(FetchDescriptor<LocalEpisodeState>())) ?? []
         var played: Set<String> = []
         var deleted: Set<String> = []
         var downloaded: Set<String> = []
@@ -371,17 +384,82 @@ enum LibraryStore {
         return (played, deleted, downloaded)
     }
 
+    struct EpisodeDisplayData {
+        let playedIDs: Set<String>
+        let deletedIDs: Set<String>
+        let downloadedIDs: Set<String>
+        let summarySnippets: [String: String]
+        let artworkURLs: [String: URL]
+    }
+
+    // Single-pass replacement for separate episodeIDSets + summarySnippets + artworkURLs calls.
+    // Two targeted fetches instead of three full-table scans.
+    static func episodeDisplayData(for episodes: [EpisodeDTO], in context: ModelContext) -> EpisodeDisplayData {
+        episodeDisplayData(for: episodes, states: allEpisodeStates(in: context), in: context)
+    }
+
+    static func episodeDisplayData(for episodes: [EpisodeDTO], states allStates: [LocalEpisodeState], in context: ModelContext) -> EpisodeDisplayData {
+        guard !episodes.isEmpty else {
+            return EpisodeDisplayData(playedIDs: [], deletedIDs: [], downloadedIDs: [], summarySnippets: [:], artworkURLs: [:])
+        }
+        let episodeIDSet = Set(episodes.map(\.stableID))
+        let podcastIDs = Array(Set(episodes.compactMap(\.podcastStableID)))
+
+        let states = allStates.filter { episodeIDSet.contains($0.episodeStableID) }
+
+        var played: Set<String> = []
+        var deleted: Set<String> = []
+        var downloaded: Set<String> = []
+        var snippets: [String: String] = [:]
+        var cachedImageURLs: [String: URL] = [:]
+
+        for state in states {
+            let id = state.episodeStableID
+            if state.isDeleted { deleted.insert(id) }
+            if state.isDownloaded { downloaded.insert(id) }
+            if let duration = state.duration, duration > 0 {
+                if state.playbackPosition >= max(0, duration - 30) { played.insert(id) }
+            } else if state.lastListenedAt != nil {
+                played.insert(id)
+            }
+            if let snippet = state.strippedSummary, !snippet.isEmpty { snippets[id] = snippet }
+            if let url = state.cachedImageFileURL { cachedImageURLs[id] = url }
+        }
+
+        var podcastArtwork: [String: URL] = [:]
+        if !podcastIDs.isEmpty {
+            let pidSet = Set(podcastIDs)
+            let allSubs = (try? context.fetch(FetchDescriptor<PodcastSubscription>())) ?? []
+            for sub in allSubs.filter({ pidSet.contains($0.stableID) }) {
+                guard let url = sub.artworkURL else { continue }
+                let cached = LocalMediaCache.cachedFileURL(for: url)
+                podcastArtwork[sub.stableID] = FileManager.default.fileExists(atPath: cached.path) ? cached : url
+            }
+        }
+
+        var artworkURLs: [String: URL] = [:]
+        artworkURLs.reserveCapacity(episodes.count)
+        for ep in episodes {
+            if let url = cachedImageURLs[ep.stableID] {
+                artworkURLs[ep.stableID] = url
+            } else if let url = ep.imageURL.flatMap(URL.init) {
+                artworkURLs[ep.stableID] = url
+            } else if let pid = ep.podcastStableID, let fallback = podcastArtwork[pid] {
+                artworkURLs[ep.stableID] = fallback
+            }
+        }
+
+        return EpisodeDisplayData(playedIDs: played, deletedIDs: deleted, downloadedIDs: downloaded,
+                                  summarySnippets: snippets, artworkURLs: artworkURLs)
+    }
+
     static func summarySnippets(for episodes: [EpisodeDTO], in context: ModelContext) -> [String: String] {
         let episodeIDs = Set(episodes.map(\.stableID))
         guard !episodeIDs.isEmpty else { return [:] }
-        let descriptor = FetchDescriptor<LocalEpisodeState>()
-        let states = (try? context.fetch(descriptor)) ?? []
-        return Dictionary(uniqueKeysWithValues: states.compactMap { state in
+        let allStates = (try? context.fetch(FetchDescriptor<LocalEpisodeState>())) ?? []
+        return Dictionary(uniqueKeysWithValues: allStates.compactMap { state in
             guard episodeIDs.contains(state.episodeStableID),
-                  let snippet = state.strippedSummary,
-                  !snippet.isEmpty else {
-                return nil
-            }
+                  let snippet = state.strippedSummary, !snippet.isEmpty else { return nil }
             return (state.episodeStableID, snippet)
         })
     }
@@ -390,14 +468,47 @@ enum LibraryStore {
         episodeState(for: episode, in: context)?.episodeDTO(preferDownloadedFile: true) ?? episode
     }
 
+    static func allEpisodeStates(in context: ModelContext) -> [LocalEpisodeState] {
+        (try? context.fetch(FetchDescriptor<LocalEpisodeState>())) ?? []
+    }
+
     static func localEpisodes(forPodcastIDs podcastIDs: [String], in context: ModelContext) -> [EpisodeDTO] {
+        localEpisodes(forPodcastIDs: podcastIDs, states: allEpisodeStates(in: context))
+    }
+
+    static func localEpisodes(forPodcastIDs podcastIDs: [String], states: [LocalEpisodeState]) -> [EpisodeDTO] {
         guard !podcastIDs.isEmpty else { return [] }
-        let descriptor = FetchDescriptor<LocalEpisodeState>()
-        let states = (try? context.fetch(descriptor)) ?? []
         return states
             .filter { !$0.isDeleted && podcastIDs.contains($0.podcastStableID) && $0.cachedAt != nil }
             .map { $0.episodeDTO(preferDownloadedFile: true) }
             .sorted { ($0.publishedAt ?? .distantPast) > ($1.publishedAt ?? .distantPast) }
+    }
+
+    static func episodeSortIndices(in context: ModelContext) -> [String: Int] {
+        let descriptor = FetchDescriptor<LocalEpisodeState>()
+        let states = (try? context.fetch(descriptor)) ?? []
+        return states.reduce(into: [:]) { dict, state in
+            if let idx = state.sortIndex { dict[state.episodeStableID] = idx }
+        }
+    }
+
+    static func clearEpisodeOrder(in context: ModelContext) {
+        let descriptor = FetchDescriptor<LocalEpisodeState>()
+        let states = (try? context.fetch(descriptor)) ?? []
+        states.forEach { $0.sortIndex = nil }
+        try? context.save()
+    }
+
+    static func setEpisodeOrder(_ orderedStableIDs: [String], in context: ModelContext) {
+        let descriptor = FetchDescriptor<LocalEpisodeState>()
+        let states = (try? context.fetch(descriptor)) ?? []
+        let statesByID = Dictionary(uniqueKeysWithValues: states.map { ($0.episodeStableID, $0) })
+        // Clear old indices first so removed episodes don't interfere
+        states.forEach { $0.sortIndex = nil }
+        for (index, id) in orderedStableIDs.enumerated() {
+            statesByID[id]?.sortIndex = index
+        }
+        try? context.save()
     }
 
     static func localEpisodes(matching query: String, in context: ModelContext) -> [EpisodeDTO] {
@@ -534,6 +645,23 @@ enum LibraryStore {
         return try? context.fetch(descriptor).first
     }
 
+    enum TranscriptAlignmentStatus {
+        case none
+        case exactFile
+        case extrapolated
+    }
+
+    static func transcriptAlignmentStatus(for episode: EpisodeDTO, in context: ModelContext) -> TranscriptAlignmentStatus {
+        guard let a = artifact(for: episode, in: context),
+              a.alignedTranscriptSegmentsJSON != nil else { return .none }
+        if let sourceHash = a.alignmentSourceAudioHash,
+           let backendHash = a.fingerprintAudioHash,
+           sourceHash == backendHash {
+            return .exactFile
+        }
+        return .extrapolated
+    }
+
     static func cachedTranscriptText(for episode: EpisodeDTO, in context: ModelContext) -> String? {
         artifact(for: episode, in: context)?.transcriptText
     }
@@ -594,7 +722,6 @@ enum LibraryStore {
         artifact.alignmentSourceAudioHash = nil
         artifact.alignmentHasUnmatchedSegments = false
         artifact.updatedAt = .now
-        try? context.save()
     }
 
     static func cacheFingerprint(_ fingerprint: AudioFingerprintDTO, for episode: EpisodeDTO, in context: ModelContext) {
@@ -607,6 +734,7 @@ enum LibraryStore {
 
     static func alignTranscriptToDownloadedAudio(for episode: EpisodeDTO, in context: ModelContext) async {
         guard let artifact = artifact(for: episode, in: context),
+              artifact.alignedTranscriptSegmentsJSON == nil || artifact.alignmentAlgorithmVersion != TranscriptAligner.algorithmVersion,
               let transcriptSegmentsJSON = artifact.transcriptSegmentsJSON,
               let fingerprintAlgorithm = artifact.fingerprintAlgorithm,
               let fingerprintChunksJSON = artifact.fingerprintChunksJSON,
@@ -614,25 +742,49 @@ enum LibraryStore {
               FileManager.default.fileExists(atPath: localURL.path) else {
             return
         }
+        let segmentFingerprintsJSON = artifact.transcriptSegmentFingerprintsJSON
+        let renditionID = artifact.transcriptRenditionID
+        let audioHash = artifact.fingerprintAudioHash
         do {
             let localFingerprint = try await AudioFingerprintMaker.fingerprint(audioFile: localURL)
             let backendFingerprint = AudioFingerprintDTO(
                 id: nil,
-                renditionID: artifact.transcriptRenditionID,
+                renditionID: renditionID,
                 algorithm: fingerprintAlgorithm,
                 chunkDuration: AudioFingerprintMaker.chunkDuration,
                 chunksJSON: fingerprintChunksJSON,
-                audioHash: artifact.fingerprintAudioHash
+                audioHash: audioHash
             )
-            if let result = TranscriptAligner.alignedSegmentsJSON(transcriptSegmentsJSON: transcriptSegmentsJSON, segmentFingerprintsJSON: artifact.transcriptSegmentFingerprintsJSON, backendFingerprint: backendFingerprint, localFingerprint: localFingerprint) {
+            if let result = await runAlignment(
+                transcriptSegmentsJSON: transcriptSegmentsJSON,
+                segmentFingerprintsJSON: segmentFingerprintsJSON,
+                backendFingerprint: backendFingerprint,
+                localFingerprint: localFingerprint
+            ) {
                 artifact.alignedTranscriptSegmentsJSON = result.json
-                artifact.alignmentSourceAudioHash = localFingerprint.audioHash
+                artifact.alignmentSourceAudioHash = localFingerprint.renditionID
                 artifact.alignmentHasUnmatchedSegments = result.hasUnmatchedSegments
+                artifact.alignmentAlgorithmVersion = TranscriptAligner.algorithmVersion
                 artifact.updatedAt = .now
             }
         } catch {
             // Alignment is best-effort; fall back to backend timestamps.
         }
+    }
+
+    @concurrent
+    private static func runAlignment(
+        transcriptSegmentsJSON: String,
+        segmentFingerprintsJSON: String?,
+        backendFingerprint: AudioFingerprintDTO,
+        localFingerprint: AudioFingerprintUpload
+    ) async -> TranscriptAlignmentResult? {
+        TranscriptAligner.alignedSegmentsJSON(
+            transcriptSegmentsJSON: transcriptSegmentsJSON,
+            segmentFingerprintsJSON: segmentFingerprintsJSON,
+            backendFingerprint: backendFingerprint,
+            localFingerprint: localFingerprint
+        )
     }
 
     static func cacheChapters(_ chapters: ChapterArtifactDTO, for episode: EpisodeDTO, in context: ModelContext) {

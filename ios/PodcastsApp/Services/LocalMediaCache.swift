@@ -1,6 +1,8 @@
+import CryptoKit
 import Foundation
 import Combine
-import CryptoKit
+import ImageIO
+import PodcatcherKit
 #if canImport(UIKit)
 import UIKit
 #endif
@@ -84,11 +86,55 @@ enum LocalMediaCache {
             .appendingPathComponent(fileName(for: remoteURL), isDirectory: false)
     }
 
+    /// Produces (and caches) a downsampled copy of a cached artwork file in the
+    /// App Group, sized for widget display. Widget extensions have a ~30 MB
+    /// memory cap and get jetsammed while *decoding* large sources (e.g. a
+    /// 3000×3000 RGBA PNG ≈ 36 MB peak) regardless of the thumbnail size they
+    /// request. We do the heavy decode here in the main app, which has headroom,
+    /// and hand the widget a small file it can decode cheaply. Returns the
+    /// original URL if downsampling isn't possible so callers always get a
+    /// usable file.
+    static func widgetArtworkFileURL(for sourceURL: URL, maxPixelSize: Int = 600) -> URL {
+        let fm = FileManager.default
+        guard sourceURL.isFileURL, fm.fileExists(atPath: sourceURL.path) else { return sourceURL }
+
+        let destDir = cacheDirectory.appendingPathComponent("WidgetArtwork", isDirectory: true)
+        let destURL = destDir.appendingPathComponent(sourceURL.lastPathComponent, isDirectory: false)
+
+        // Reuse an existing downsample if it's at least as new as the source.
+        if let destDate = (try? fm.attributesOfItem(atPath: destURL.path))?[.modificationDate] as? Date,
+           let srcDate = (try? fm.attributesOfItem(atPath: sourceURL.path))?[.modificationDate] as? Date,
+           destDate >= srcDate {
+            return destURL
+        }
+
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize
+        ]
+        guard let source = CGImageSourceCreateWithURL(sourceURL as CFURL, nil),
+              let type = CGImageSourceGetType(source),
+              let thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+        else { return sourceURL }
+
+        try? fm.createDirectory(at: destDir, withIntermediateDirectories: true)
+        guard let destination = CGImageDestinationCreateWithURL(destURL as CFURL, type, 1, nil) else {
+            return sourceURL
+        }
+        CGImageDestinationAddImage(destination, thumbnail, nil)
+        guard CGImageDestinationFinalize(destination) else { return sourceURL }
+        return destURL
+    }
+
     static func existingCachedFileURL(for remoteURL: URL) async -> URL? {
         let destination = cachedFileURL(for: remoteURL)
-        if await fileExists(at: destination) {
-            return destination
-        }
+        if await fileExists(at: destination) { return destination }
+        // Legacy: same SHA-256 filename but in the old app support directory
+        let prevDestination = previousCacheDirectory
+            .appendingPathComponent(fileName(for: remoteURL), isDirectory: false)
+        if await fileExists(at: prevDestination) { return prevDestination }
+        // Very legacy: base-64 filename
         let legacyDestination = legacyCachedFileURL(for: remoteURL)
         return await fileExists(at: legacyDestination) ? legacyDestination : nil
     }
@@ -100,6 +146,14 @@ enum LocalMediaCache {
                 await DownloadProgressCenter.shared.finish(id: progressID)
             }
             return destination
+        }
+        let prevDestination = previousCacheDirectory
+            .appendingPathComponent(fileName(for: remoteURL), isDirectory: false)
+        if await fileExists(at: prevDestination) {
+            if let progressID {
+                await DownloadProgressCenter.shared.finish(id: progressID)
+            }
+            return prevDestination
         }
         let legacyDestination = legacyCachedFileURL(for: remoteURL)
         if await fileExists(at: legacyDestination) {
@@ -131,6 +185,8 @@ enum LocalMediaCache {
 
     static func removeCachedFile(for remoteURL: URL) async {
         try? await removeFile(at: cachedFileURL(for: remoteURL))
+        let prevDestination = previousCacheDirectory.appendingPathComponent(fileName(for: remoteURL), isDirectory: false)
+        try? await removeFile(at: prevDestination)
         try? await removeFile(at: legacyCachedFileURL(for: remoteURL))
     }
 
@@ -150,7 +206,16 @@ enum LocalMediaCache {
         try? await removeFile(at: url)
     }
 
+    // Primary location: App Group container so extensions (widgets, CarPlay) can access files.
+    // Falls back to app support if the entitlement isn't active (e.g. unsigned builds).
     private static var cacheDirectory: URL {
+        AppGroupConstants.containerURL?
+            .appendingPathComponent("PodcastMediaCache", isDirectory: true)
+            ?? previousCacheDirectory
+    }
+
+    // The old location used before App Group migration.
+    private static var previousCacheDirectory: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("PodcastMediaCache", isDirectory: true)
     }

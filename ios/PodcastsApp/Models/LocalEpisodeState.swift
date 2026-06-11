@@ -3,23 +3,24 @@ import SwiftData
 
 @Model
 final class LocalEpisodeState {
-    @Attribute(.unique) var episodeStableID: String
-    var podcastStableID: String
-    var title: String
+    var episodeStableID: String = ""
+    var podcastStableID: String = ""
+    var title: String = ""
     var summary: String?
     var strippedSummary: String?
-    var audioURL: URL
+    var audioURL: URL = URL(string: "about:blank")!
     var imageURL: URL?
     var cachedImageFileURL: URL?
     var publishedAt: Date?
-    var playbackPosition: TimeInterval
+    var playbackPosition: TimeInterval = 0
     var duration: TimeInterval?
-    var isDownloaded: Bool
-    var isDeleted: Bool
+    var isDownloaded: Bool = false
+    var isDeleted: Bool = false
     var downloadedFileURL: URL?
     var lastListenedAt: Date?
     var deletedAt: Date?
     var cachedAt: Date?
+    var sortIndex: Int?
 
     init(episodeStableID: String, podcastStableID: String, title: String, audioURL: URL) {
         self.episodeStableID = episodeStableID

@@ -107,6 +107,29 @@ enum DownloadSettings {
 enum PlaybackSettings {
     private static let globalSpeedKey = "playbackSettings.globalSpeed"
     private static let defaultSpeed = 1.7
+    private static let continueWithNewestKey = "playbackSettings.continueWithNewest"
+    private static let sleepRecoveryKey = "playbackSettings.sleepRecovery"
+    private static let lastHandledSleepOnsetKey = "playbackSettings.lastHandledSleepOnset"
+
+    static var sleepRecoveryEnabled: Bool {
+        get { UserDefaults.standard.object(forKey: sleepRecoveryKey) as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: sleepRecoveryKey) }
+    }
+
+    static var lastHandledSleepOnset: Date? {
+        get {
+            let t = UserDefaults.standard.double(forKey: lastHandledSleepOnsetKey)
+            return t > 0 ? Date(timeIntervalSince1970: t) : nil
+        }
+        set {
+            UserDefaults.standard.set(newValue?.timeIntervalSince1970 ?? 0, forKey: lastHandledSleepOnsetKey)
+        }
+    }
+
+    static var continueWithNewestEpisode: Bool {
+        get { UserDefaults.standard.bool(forKey: continueWithNewestKey) }
+        set { UserDefaults.standard.set(newValue, forKey: continueWithNewestKey) }
+    }
 
     static var globalSpeed: Double {
         get {

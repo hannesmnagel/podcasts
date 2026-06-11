@@ -3,9 +3,9 @@ import SwiftData
 
 @Model
 final class Playlist {
-    @Attribute(.unique) var id: UUID
-    var name: String
-    var sortIndex: Int
+    var id: UUID = UUID()
+    var name: String = ""
+    var sortIndex: Int = 0
     var smartKind: String?
 
     init(id: UUID = UUID(), name: String, sortIndex: Int, smartKind: String? = nil) {

@@ -29,6 +29,7 @@ final class SearchViewController: UITableViewController, UISearchResultsUpdating
     private let player: PlayerController
     private let client = BackendClient()
     private var query = ""
+    private var liveSearchTask: Task<Void, Never>?
     private var results = EpisodeSearchDTO()
     private var visibleEpisodeSnapshot: [EpisodeDTO] = []
     private var subscriptions: [PodcastSubscription] = []
@@ -63,32 +64,56 @@ final class SearchViewController: UITableViewController, UISearchResultsUpdating
 
         setupCrawlingProgressView()
 
+        #if targetEnvironment(macCatalyst)
+        title = nil
+        setupMacSearchHeader()
+        #else
         let searchController = UISearchController(searchResultsController: nil)
         searchController.searchResultsUpdater = self
         searchController.searchBar.delegate = self
         searchController.searchBar.placeholder = "Search or add podcasts"
         navigationItem.searchController = searchController
         navigationItem.hidesSearchBarWhenScrolling = false
+        #endif
         loadSubscriptions()
         updateRows()
     }
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
+        #if targetEnvironment(macCatalyst)
+        navigationController?.setNavigationBarHidden(true, animated: false)
+        #endif
         loadSubscriptions()
         tableView.reloadData()
+    }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        #if targetEnvironment(macCatalyst)
+        macSearchField?.becomeFirstResponder()
+        #endif
     }
 
     func updateSearchResults(for searchController: UISearchController) {
         query = searchController.searchBar.text ?? ""
         if query.isEmpty {
+            liveSearchTask?.cancel()
             results = EpisodeSearchDTO()
             refreshVisibleEpisodeSnapshot()
             updateRows()
+        } else {
+            liveSearchTask?.cancel()
+            liveSearchTask = Task {
+                try? await Task.sleep(for: .milliseconds(350))
+                guard !Task.isCancelled else { return }
+                await submitSearch()
+            }
         }
     }
 
     func searchBarSearchButtonClicked(_ searchBar: UISearchBar) {
+        liveSearchTask?.cancel()
         Task { await submitSearch() }
     }
 
@@ -407,6 +432,54 @@ final class SearchViewController: UITableViewController, UISearchResultsUpdating
         }
         return url
     }
+
+    #if targetEnvironment(macCatalyst)
+    private weak var macSearchField: UISearchTextField?
+
+    private func setupMacSearchHeader() {
+        let field = UISearchTextField()
+        field.placeholder = "Search or add podcasts"
+        field.returnKeyType = .search
+        field.translatesAutoresizingMaskIntoConstraints = false
+        field.addTarget(self, action: #selector(macSearchFieldChanged), for: .editingChanged)
+        field.addTarget(self, action: #selector(macSearchFieldSubmitted), for: .primaryActionTriggered)
+        self.macSearchField = field
+
+        let container = UIView()
+        container.addSubview(field)
+        NSLayoutConstraint.activate([
+            field.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 16),
+            field.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -16),
+            field.topAnchor.constraint(equalTo: container.topAnchor, constant: 10),
+            field.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -10),
+            field.heightAnchor.constraint(equalToConstant: 36),
+        ])
+        container.frame = CGRect(x: 0, y: 0, width: tableView.bounds.width, height: 56)
+        tableView.tableHeaderView = container
+    }
+
+    @objc private func macSearchFieldChanged() {
+        query = macSearchField?.text ?? ""
+        if query.isEmpty {
+            liveSearchTask?.cancel()
+            results = EpisodeSearchDTO()
+            refreshVisibleEpisodeSnapshot()
+            updateRows()
+        } else {
+            liveSearchTask?.cancel()
+            liveSearchTask = Task {
+                try? await Task.sleep(for: .milliseconds(350))
+                guard !Task.isCancelled else { return }
+                await submitSearch()
+            }
+        }
+    }
+
+    @objc private func macSearchFieldSubmitted() {
+        liveSearchTask?.cancel()
+        Task { await submitSearch() }
+    }
+    #endif
 
     private func setupCrawlingProgressView() {
         // Configure background

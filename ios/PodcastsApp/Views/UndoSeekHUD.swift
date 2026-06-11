@@ -8,16 +8,10 @@ final class UndoSeekHUD {
     private var stackView: UIStackView?
     private var toastViews: [SeekUndoAction.ID: UIVisualEffectView] = [:]
     private var hideTasks: [SeekUndoAction.ID: Task<Void, Never>] = [:]
-    private var undoHandler: ((SeekUndoAction) -> Void)?
-    private var dismissHandler: ((SeekUndoAction) -> Void)?
-    private var actionsByID: [SeekUndoAction.ID: SeekUndoAction] = [:]
 
     private init() {}
 
-    func show(action: SeekUndoAction, undo: @escaping (SeekUndoAction) -> Void, dismiss: @escaping (SeekUndoAction) -> Void) {
-        undoHandler = undo
-        dismissHandler = dismiss
-        actionsByID[action.id] = action
+    func show(action: SeekUndoAction) {
         installIfNeeded()
 
         let toast = makeToast(for: action)
@@ -33,9 +27,7 @@ final class UndoSeekHUD {
 
         hideTasks[action.id]?.cancel()
         hideTasks[action.id] = Task { @MainActor in
-            try? await Task.sleep(for: .seconds(3))
-            guard self.actionsByID[action.id] != nil else { return }
-            dismiss(action)
+            try? await Task.sleep(for: .seconds(2))
             self.hide(actionID: action.id)
         }
     }
@@ -78,7 +70,7 @@ final class UndoSeekHUD {
         hud.layer.cornerRadius = 18
         hud.layer.cornerCurve = .continuous
         hud.clipsToBounds = true
-        hud.isUserInteractionEnabled = true
+        hud.isUserInteractionEnabled = false
 
         let label = UILabel()
         label.font = .preferredFont(forTextStyle: .subheadline)
@@ -86,50 +78,22 @@ final class UndoSeekHUD {
         label.textColor = .label
         label.numberOfLines = 1
         label.text = detailText(for: action)
-        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        var configuration = UIButton.Configuration.filled()
-        configuration.cornerStyle = .capsule
-        configuration.baseBackgroundColor = .systemOrange
-        configuration.baseForegroundColor = .white
-        configuration.contentInsets = NSDirectionalEdgeInsets(top: 7, leading: 16, bottom: 7, trailing: 16)
-        let button = UIButton(type: .system)
-        button.configuration = configuration
-        button.addAction(UIAction { [weak self] _ in
-            self?.undoTapped(actionID: action.id)
-        }, for: .touchUpInside)
-        button.setContentCompressionResistancePriority(.required, for: .horizontal)
-        button.accessibilityLabel = "Undo Seek"
-        button.setTitle("Undo", for: .normal)
-
-        let stack = UIStackView(arrangedSubviews: [label, button])
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        stack.axis = .horizontal
-        stack.alignment = .center
-        stack.spacing = 14
-        hud.contentView.addSubview(stack)
-        window.addSubview(hud)
-
+        label.translatesAutoresizingMaskIntoConstraints = false
+        hud.contentView.addSubview(label)
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: hud.contentView.leadingAnchor, constant: 16),
-            stack.trailingAnchor.constraint(equalTo: hud.contentView.trailingAnchor, constant: -10),
-            stack.topAnchor.constraint(equalTo: hud.contentView.topAnchor, constant: 10),
-            stack.bottomAnchor.constraint(equalTo: hud.contentView.bottomAnchor, constant: -10)
+            label.leadingAnchor.constraint(equalTo: hud.contentView.leadingAnchor, constant: 16),
+            label.trailingAnchor.constraint(equalTo: hud.contentView.trailingAnchor, constant: -16),
+            label.topAnchor.constraint(equalTo: hud.contentView.topAnchor, constant: 12),
+            label.bottomAnchor.constraint(equalTo: hud.contentView.bottomAnchor, constant: -12)
         ])
         return hud
-    }
-
-    private func undoTapped(actionID: SeekUndoAction.ID) {
-        guard let action = actionsByID[actionID] else { return }
-        undoHandler?(action)
-        hide(actionID: action.id)
     }
 
     private func hide(actionID: SeekUndoAction.ID?) {
         guard let actionID else { return }
         hideTasks[actionID]?.cancel()
         hideTasks[actionID] = nil
-        actionsByID[actionID] = nil
         guard let toast = toastViews[actionID] else { return }
         UIView.animate(withDuration: 0.18, delay: 0, options: [.allowUserInteraction, .beginFromCurrentState], animations: {
             toast.alpha = 0
@@ -138,9 +102,10 @@ final class UndoSeekHUD {
             toast.removeFromSuperview()
         })
         toastViews[actionID] = nil
-        if actionsByID.isEmpty {
-            undoHandler = nil
-            dismissHandler = nil
+        if toastViews.isEmpty {
+            hostView?.removeFromSuperview()
+            hostView = nil
+            stackView = nil
         }
     }
 

@@ -102,6 +102,17 @@ final class AllPodcastsViewController: UITableViewController, UIDocumentPickerDe
         updateSelectionToolbar()
     }
 
+    override func tableView(_ tableView: UITableView, canMoveRowAt indexPath: IndexPath) -> Bool { true }
+
+    override func tableView(_ tableView: UITableView, moveRowAt sourceIndexPath: IndexPath, to destinationIndexPath: IndexPath) {
+        var reordered = subscriptions
+        let moved = reordered.remove(at: sourceIndexPath.row)
+        reordered.insert(moved, at: destinationIndexPath.row)
+        for (index, sub) in reordered.enumerated() { sub.sortIndex = index }
+        subscriptions = reordered
+        try? modelContext.save()
+    }
+
     override func tableView(_ tableView: UITableView, trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath) -> UISwipeActionsConfiguration? {
         guard !tableView.isEditing else { return nil }
         let subscription = subscriptions[indexPath.row]
@@ -136,7 +147,16 @@ final class AllPodcastsViewController: UITableViewController, UIDocumentPickerDe
     private func load() {
         var descriptor = FetchDescriptor<PodcastSubscription>(sortBy: [SortDescriptor(\.sortIndex)])
         descriptor.includePendingChanges = true
-        subscriptions = Self.stablySortedSubscriptions((try? modelContext.fetch(descriptor)) ?? [])
+        let fetched = (try? modelContext.fetch(descriptor)) ?? []
+        // Seed sortIndex from alphabetical order on first use (all indices are 0)
+        if fetched.allSatisfy({ $0.sortIndex == 0 }) {
+            let sorted = Self.stablySortedSubscriptions(fetched)
+            for (index, sub) in sorted.enumerated() { sub.sortIndex = index }
+            try? modelContext.save()
+            subscriptions = sorted
+        } else {
+            subscriptions = fetched
+        }
         tableView.reloadData()
         updateEmptyState()
         updateSelectionToolbar()
@@ -227,12 +247,16 @@ final class AllPodcastsViewController: UITableViewController, UIDocumentPickerDe
     }
 
     @objc private func showAppSettings() {
+        #if targetEnvironment(macCatalyst)
+        PodcastsAppDelegate.openSettingsWindow()
+        #else
         let controller = AppSettingsViewController(modelContext: modelContext, client: client)
         controller.importOPML = { [weak self] in self?.showOPMLImporter() }
         controller.importDidFinish = { [weak self] in self?.load() }
         activeAppSettingsController = controller
         let navigation = UINavigationController(rootViewController: controller)
         presentSettingsController(navigation)
+        #endif
     }
 
     private func showDownloadSettings(for subscription: PodcastSubscription) {
@@ -245,7 +269,12 @@ final class AllPodcastsViewController: UITableViewController, UIDocumentPickerDe
             guard let self, let subscription else { return }
             Task { await self.applyDownloadPolicy(for: subscription) }
         }
-        presentSettingsController(controller)
+        let nav = UINavigationController(rootViewController: controller)
+        controller.navigationItem.leftBarButtonItem = UIBarButtonItem(
+            systemItem: .close,
+            primaryAction: UIAction { [weak nav] _ in nav?.dismiss(animated: true) }
+        )
+        presentSettingsController(nav)
     }
 
     private func confirmUnfollow(_ subscription: PodcastSubscription) {
@@ -302,6 +331,8 @@ final class AppSettingsViewController: UITableViewController {
         case cellularDownloads
         case lowDataModeDownloads
         case preloadNextEpisode
+        case continueWithNewest
+        case sleepRecovery
         case applyDownloadPolicies
         case exportDiagnostics
         case chapterSkips
@@ -329,6 +360,12 @@ final class AppSettingsViewController: UITableViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         tableView.register(UITableViewCell.self, forCellReuseIdentifier: "Cell")
+        #if !targetEnvironment(macCatalyst)
+        navigationItem.leftBarButtonItem = UIBarButtonItem(
+            systemItem: .close,
+            primaryAction: UIAction { [weak self] _ in self?.navigationController?.dismiss(animated: true) }
+        )
+        #endif
     }
 
     override func viewWillAppear(_ animated: Bool) {
@@ -396,6 +433,16 @@ final class AppSettingsViewController: UITableViewController {
             configuration.secondaryText = "Start saving the next unplayed episode near the end of playback."
             cell.accessoryView = makeSwitch(isOn: DownloadSettings.preloadsNextEpisode, action: #selector(preloadNextEpisodeSwitchChanged(_:)))
             cell.selectionStyle = .none
+        case .continueWithNewest:
+            configuration.text = "Continue with Newest Episode"
+            configuration.secondaryText = "After an episode ends, play the newest unplayed episode instead of the next one in the list."
+            cell.accessoryView = makeSwitch(isOn: PlaybackSettings.continueWithNewestEpisode, action: #selector(continueWithNewestSwitchChanged(_:)))
+            cell.selectionStyle = .none
+        case .sleepRecovery:
+            configuration.text = "Sleep Recovery"
+            configuration.secondaryText = "When you open the app, offer to restore playback to where you fell asleep (requires Apple Watch sleep tracking)."
+            cell.accessoryView = makeSwitch(isOn: PlaybackSettings.sleepRecoveryEnabled, action: #selector(sleepRecoverySwitchChanged(_:)))
+            cell.selectionStyle = .none
         case .applyDownloadPolicies:
             configuration.text = "Apply Download Policies Now"
             configuration.secondaryText = "Download missing episodes for your current podcast policies."
@@ -441,7 +488,7 @@ final class AppSettingsViewController: UITableViewController {
             Task { await applyDownloadPoliciesNow() }
         case .exportDiagnostics:
             Task { await exportDiagnostics() }
-        case .backgroundDownloads, .cellularDownloads, .lowDataModeDownloads, .preloadNextEpisode:
+        case .backgroundDownloads, .cellularDownloads, .lowDataModeDownloads, .preloadNextEpisode, .continueWithNewest, .sleepRecovery:
             break
         case .chapterSkips:
             let controller = ChapterSkipRulesViewController()
@@ -511,6 +558,17 @@ final class AppSettingsViewController: UITableViewController {
 
     @objc private func preloadNextEpisodeSwitchChanged(_ sender: UISwitch) {
         DownloadSettings.preloadsNextEpisode = sender.isOn
+    }
+
+    @objc private func continueWithNewestSwitchChanged(_ sender: UISwitch) {
+        PlaybackSettings.continueWithNewestEpisode = sender.isOn
+    }
+
+    @objc private func sleepRecoverySwitchChanged(_ sender: UISwitch) {
+        PlaybackSettings.sleepRecoveryEnabled = sender.isOn
+        if sender.isOn {
+            Task { await SleepRecoveryService.requestAuthorization() }
+        }
     }
 
     private func applyDownloadPoliciesNow() async {

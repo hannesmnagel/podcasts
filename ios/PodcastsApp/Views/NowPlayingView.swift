@@ -1,6 +1,7 @@
 import AVKit
 import Combine
 import SwiftData
+import SwiftUI
 import UIKit
 import WebKit
 
@@ -22,6 +23,12 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
     private var displayMode: DisplayMode = .artwork
     private var swipePanelCacheKey: String?
     private var appliedSpeedEpisodeID: String?
+    // Cached per-episode/chapter values — avoids DB queries on every $elapsed tick
+    private var cachedPodcastTitleEpisodeID: String?
+    private var cachedPodcastTitleValue: String = "Now Playing"
+    private var cachedArtworkEpisodeID: String?
+    private var cachedArtworkChapterIndex: Int? = nil
+    private var cachedArtworkURL: URL?
     private var artifactLoadTask: Task<Void, Never>?
     private var didSetInitialMediaPage = false
     private var hasInteractedWithMediaPager = false
@@ -54,6 +61,7 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
         return webView
     }()
     private let transcriptPlaceholderLabel = UILabel()
+    private let alignmentDotView = UIView()
     private let chaptersNotesScrollView = UIScrollView()
     private let chaptersNotesStack = UIStackView()
     private let progressControl = PlaybackProgressControl()
@@ -65,6 +73,10 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
     private let remainingLabel = UILabel()
     private let playButton = UIButton(type: .system)
     private var dragStartY: CGFloat = 0
+    #if targetEnvironment(macCatalyst)
+    private var isWindowPinned = false
+    private weak var pinButton: UIButton?
+    #endif
 
     init(modelContext: ModelContext, player: PlayerController) {
         self.modelContext = modelContext
@@ -79,8 +91,7 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        view.backgroundColor = UIColor(white: 0.1, alpha: 1)
-        overrideUserInterfaceStyle = .dark
+        view.backgroundColor = .systemBackground
         configureLayout()
         configureDismissGesture()
         bindPlayer()
@@ -89,7 +100,51 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
             await Task.yield()
             ensureInitialMediaPage()
         }
+        #if targetEnvironment(macCatalyst)
+        configureMacOverlayButtons()
+        #endif
     }
+
+    #if targetEnvironment(macCatalyst)
+    private func configureMacOverlayButtons() {
+        let symbolConfig = UIImage.SymbolConfiguration(pointSize: 22)
+
+        let closeBtn = UIButton(type: .system)
+        closeBtn.setImage(UIImage(systemName: "xmark.circle.fill"), for: .normal)
+        closeBtn.tintColor = .secondaryLabel
+        closeBtn.setPreferredSymbolConfiguration(symbolConfig, forImageIn: .normal)
+        closeBtn.addAction(UIAction { [weak self] _ in self?.close() }, for: .touchUpInside)
+        closeBtn.translatesAutoresizingMaskIntoConstraints = false
+
+        let pinBtn = UIButton(type: .system)
+        pinBtn.setImage(UIImage(systemName: "pin"), for: .normal)
+        pinBtn.tintColor = .secondaryLabel
+        pinBtn.setPreferredSymbolConfiguration(UIImage.SymbolConfiguration(pointSize: 18), forImageIn: .normal)
+        pinBtn.accessibilityLabel = "Keep window on top"
+        pinBtn.addAction(UIAction { [weak self] _ in self?.toggleWindowPin() }, for: .touchUpInside)
+        pinBtn.translatesAutoresizingMaskIntoConstraints = false
+        self.pinButton = pinBtn
+
+        view.addSubview(closeBtn)
+        view.addSubview(pinBtn)
+        NSLayoutConstraint.activate([
+            closeBtn.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            closeBtn.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 10),
+            pinBtn.trailingAnchor.constraint(equalTo: closeBtn.leadingAnchor, constant: -6),
+            pinBtn.centerYAnchor.constraint(equalTo: closeBtn.centerYAnchor)
+        ])
+    }
+
+    @objc private func toggleWindowPin() {
+        isWindowPinned.toggle()
+        // NSWindow.Level: normal = 0, floating = 3
+        if let nsWindow = view.window?.value(forKey: "nsWindow") as? NSObject {
+            nsWindow.setValue(isWindowPinned ? 3 : 0, forKey: "level")
+        }
+        pinButton?.setImage(UIImage(systemName: isWindowPinned ? "pin.fill" : "pin"), for: .normal)
+        pinButton?.tintColor = isWindowPinned ? .systemOrange : .secondaryLabel
+    }
+    #endif
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
@@ -187,7 +242,7 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
         ])
 
         chaptersNotesScrollView.translatesAutoresizingMaskIntoConstraints = false
-        chaptersNotesScrollView.backgroundColor = UIColor.white.withAlphaComponent(0.06)
+        chaptersNotesScrollView.backgroundColor = .secondarySystemFill
         chaptersNotesScrollView.layer.cornerRadius = 20
         chaptersNotesScrollView.clipsToBounds = true
         chaptersNotesStack.translatesAutoresizingMaskIntoConstraints = false
@@ -202,12 +257,15 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
         progressControl.translatesAutoresizingMaskIntoConstraints = false
         progressControl.valueChanged = { [weak self] value in
             guard let self else { return }
-            self.player.seek(to: value, from: self.progressSeekStart)
+            self.player.seek(to: value, from: self.progressSeekStart, finalizing: false)
         }
         progressControl.trackingChanged = { [weak self] isTracking in
             if isTracking {
                 self?.progressSeekStart = self?.player.elapsed
             } else {
+                if let seekStart = self?.progressSeekStart {
+                    self?.player.seek(to: self?.progressControl.value ?? 0, from: seekStart, finalizing: true)
+                }
                 self?.progressSeekStart = nil
             }
             self?.progressHeightConstraint?.constant = isTracking ? 48 : 34
@@ -270,7 +328,12 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
         bottom.distribution = .equalSpacing
         bottom.alignment = .center
 
-        [titleStack, contentContainer, progressRow, timeRow, controls, bottom].forEach(view.addSubview)
+        alignmentDotView.translatesAutoresizingMaskIntoConstraints = false
+        alignmentDotView.layer.cornerRadius = 4
+        alignmentDotView.isHidden = true
+        alignmentDotView.isUserInteractionEnabled = false
+
+        [titleStack, contentContainer, alignmentDotView, progressRow, timeRow, controls, bottom].forEach(view.addSubview)
         let artworkWidth = contentContainer.widthAnchor.constraint(equalTo: view.widthAnchor, multiplier: 0.94)
 
         progressHeightConstraint = progressControl.heightAnchor.constraint(equalToConstant: 34)
@@ -291,6 +354,11 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
             mediaPageStack.bottomAnchor.constraint(equalTo: contentContainer.contentLayoutGuide.bottomAnchor),
             mediaPageStack.heightAnchor.constraint(equalTo: contentContainer.frameLayoutGuide.heightAnchor),
             mediaPageStack.widthAnchor.constraint(equalTo: contentContainer.frameLayoutGuide.widthAnchor, multiplier: 3),
+            alignmentDotView.widthAnchor.constraint(equalToConstant: 8),
+            alignmentDotView.heightAnchor.constraint(equalToConstant: 8),
+            alignmentDotView.trailingAnchor.constraint(equalTo: contentContainer.trailingAnchor, constant: -10),
+            alignmentDotView.topAnchor.constraint(equalTo: contentContainer.topAnchor, constant: 10),
+
             transcriptWebView.widthAnchor.constraint(equalTo: contentContainer.frameLayoutGuide.widthAnchor),
             artworkPage.widthAnchor.constraint(equalTo: contentContainer.frameLayoutGuide.widthAnchor),
             artworkView.leadingAnchor.constraint(equalTo: artworkPage.leadingAnchor),
@@ -322,7 +390,7 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
             chapterForwardButton.widthAnchor.constraint(equalToConstant: 44),
             chapterForwardButton.heightAnchor.constraint(equalToConstant: 44),
 
-            controls.topAnchor.constraint(equalTo: timeRow.bottomAnchor, constant: 24),
+            controls.topAnchor.constraint(equalTo: timeRow.bottomAnchor, constant: 8),
             controls.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 86),
             controls.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -86),
             controls.bottomAnchor.constraint(lessThanOrEqualTo: bottom.topAnchor, constant: -14),
@@ -438,11 +506,11 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
     }
 
     private func glassContainer(cornerRadius: CGFloat) -> UIVisualEffectView {
-        let blur = UIVisualEffectView(effect: UIBlurEffect(style: .systemUltraThinMaterialDark))
+        let blur = UIVisualEffectView(effect: UIBlurEffect(style: .systemUltraThinMaterial))
         blur.translatesAutoresizingMaskIntoConstraints = false
         blur.clipsToBounds = true
         blur.layer.cornerRadius = cornerRadius
-        blur.layer.borderColor = UIColor.white.withAlphaComponent(0.12).cgColor
+        blur.layer.borderColor = UIColor.separator.cgColor
         blur.layer.borderWidth = 1
         return blur
     }
@@ -452,7 +520,9 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
             .map { $0?.stableID }
             .removeDuplicates()
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.reloadArtifactsForCurrentEpisode() }
+            .sink { [weak self] _ in
+                self?.reloadArtifactsForCurrentEpisode()
+            }
             .store(in: &cancellables)
 
         player.$currentEpisode.combineLatest(player.$isPlaying, player.$elapsed, player.$duration)
@@ -485,9 +555,19 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
         }
         applyPlaybackSettingsIfNeeded(for: episode)
         titleLabel.text = episode.title
-        podcastLabel.text = podcastTitle(for: episode).uppercased()
+        if cachedPodcastTitleEpisodeID != episode.stableID {
+            cachedPodcastTitleEpisodeID = episode.stableID
+            cachedPodcastTitleValue = podcastTitle(for: episode)
+        }
+        podcastLabel.text = cachedPodcastTitleValue.uppercased()
         dateLabel.text = episode.publishedAt?.formatted(date: .abbreviated, time: .omitted)
-        artworkView.load(url: currentArtworkURL(for: episode), minimumPixelDimension: 1200)
+        let chapterIdx = chapters.isEmpty ? nil : chapters.lastIndex { $0.start <= player.elapsed }
+        if cachedArtworkEpisodeID != episode.stableID || cachedArtworkChapterIndex != chapterIdx {
+            cachedArtworkEpisodeID = episode.stableID
+            cachedArtworkChapterIndex = chapterIdx
+            cachedArtworkURL = currentArtworkURL(for: episode)
+        }
+        artworkView.load(url: cachedArtworkURL, minimumPixelDimension: 1200)
         currentChapterLabel.text = currentChapterTitle()
         updateSwipePanelsIfNeeded(for: episode)
         updateTranscriptPlaybackPosition()
@@ -511,14 +591,7 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
     }
 
     private func updateSwipePanelsIfNeeded(for episode: EpisodeDTO) {
-        let cacheKey = [
-            episode.stableID,
-            String(transcriptText?.hashValue ?? 0),
-            String(transcriptSegments.map { "\($0.start ?? -1):\($0.text)" }.joined(separator: "|").hashValue),
-            String(chapters.map(\.title).joined(separator: "|").hashValue),
-            String(ChapterSkipRuleStore.rules.map(\.displayTitle).joined(separator: "|").hashValue),
-            String((episode.summary ?? "").hashValue)
-        ].joined(separator: ":")
+        let cacheKey = "\(episode.stableID):\(transcriptSegments.count):\(transcriptText?.count ?? 0):\(chapters.count):\(ChapterSkipRuleStore.rules.count):\(episode.summary?.count ?? 0)"
         guard cacheKey != swipePanelCacheKey else { return }
         swipePanelCacheKey = cacheKey
         rebuildTranscriptPanel()
@@ -546,7 +619,12 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
         guard force || transcriptNeedsReload else { return }
         transcriptNeedsReload = false
         transcriptWebContentLoaded = false
-        transcriptWebView.loadHTMLString(transcriptHTML(), baseURL: nil)
+        let segments = transcriptSegments
+        Task {
+            let html = await Self.buildTranscriptHTML(segments: segments)
+            guard self.transcriptSegments.count == segments.count else { return }
+            self.transcriptWebView.loadHTMLString(html, baseURL: nil)
+        }
     }
 
     private func updateTranscriptPlaybackPosition() {
@@ -568,12 +646,13 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
         transcriptWebView.evaluateJavaScript("window.podcatcherSetCurrentSegment(\(currentTranscriptSegmentIndex), \(allowScroll ? "true" : "false"));", completionHandler: nil)
     }
 
-    private func transcriptHTML() -> String {
-        guard !transcriptSegments.isEmpty else {
+    @concurrent
+    private static func buildTranscriptHTML(segments: [TranscriptSegment]) async -> String {
+        guard !segments.isEmpty else {
             return "<!doctype html><html><body style=\"margin:0;background:transparent;\"></body></html>"
         }
-        let rows = transcriptSegments.enumerated().map { index, segment in
-            let timeText = segment.start.map(format) ?? segment.originalStart.map { "~\(format($0))" } ?? ""
+        let rows = segments.enumerated().map { index, segment in
+            let timeText = segment.start.map { transcriptFormatTime($0) } ?? segment.originalStart.map { "~\(transcriptFormatTime($0))" } ?? ""
             let insertedClass = segment.isInsertedAudio ? " inserted" : ""
             let prefix = segment.isInsertedAudio ? "Inserted audio / not in transcript " : ""
             let normalized = normalizeTranscriptDisplayText(prefix + segment.text)
@@ -592,10 +671,24 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
           <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
           <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline';">
           <style>
-            body { margin:0; padding:12px 14px; font: -apple-system-body; background: rgba(255,255,255,0.06); color: rgba(255,255,255,0.92); -webkit-user-select:text; user-select:text; }
+            :root {
+              --c-bg: rgba(255,255,255,0.06);
+              --c-text: rgba(255,255,255,0.92);
+              --c-time: rgba(255,255,255,0.42);
+              --c-body: rgba(255,255,255,0.80);
+            }
+            @media (prefers-color-scheme: light) {
+              :root {
+                --c-bg: rgba(0,0,0,0.03);
+                --c-text: rgba(0,0,0,0.88);
+                --c-time: rgba(0,0,0,0.40);
+                --c-body: rgba(0,0,0,0.75);
+              }
+            }
+            body { margin:0; padding:12px 14px; font: -apple-system-body; background: var(--c-bg); color: var(--c-text); -webkit-user-select:text; user-select:text; }
             .row { display:block; color:inherit; padding:6px 10px; border-radius:10px; }
-            .time { display:block; margin:0 0 3px 0; font: 600 11px ui-monospace, SFMono-Regular, Menlo, monospace; color: rgba(255,255,255,0.42); letter-spacing: 0.2px; -webkit-user-select:none; user-select:none; }
-            .text { display:block; color: rgba(255,255,255,0.80); line-height:1.24; white-space:normal; word-break:break-word; }
+            .time { display:block; margin:0 0 3px 0; font: 600 11px ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--c-time); letter-spacing: 0.2px; -webkit-user-select:none; user-select:none; }
+            .text { display:block; color: var(--c-body); line-height:1.24; white-space:normal; word-break:break-word; }
             .row.current { background: rgba(255,149,0,0.18); }
             .row.current .time { color: rgba(255,149,0,1); }
             .row.inserted .time, .row.inserted .text { color: rgba(191,90,242,0.9); }
@@ -634,7 +727,7 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
         """
     }
 
-    private func escapeHTML(_ text: String) -> String {
+    private nonisolated static func escapeHTML(_ text: String) -> String {
         text
             .replacingOccurrences(of: "&", with: "&amp;")
             .replacingOccurrences(of: "<", with: "&lt;")
@@ -643,13 +736,17 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
             .replacingOccurrences(of: "'", with: "&#39;")
     }
 
-    private func normalizeTranscriptDisplayText(_ text: String) -> String {
+    private nonisolated static func normalizeTranscriptDisplayText(_ text: String) -> String {
         text
             .replacingOccurrences(of: "\r\n", with: "\n")
             .replacingOccurrences(of: "\r", with: "\n")
             .replacingOccurrences(of: "\n", with: " ")
             .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private nonisolated static func transcriptFormatTime(_ value: TimeInterval) -> String {
+        TimeFormatting.playbackTime(value)
     }
 
     private func rebuildChaptersNotes(for episode: EpisodeDTO) {
@@ -924,6 +1021,7 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
         currentTranscriptSegmentIndex = nil
         chapters = []
         swipePanelCacheKey = nil
+        alignmentDotView.isHidden = true
         player.updateAutoSkipChapters([])
 
         guard let episode = player.currentEpisode else {
@@ -942,6 +1040,7 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
         guard isCurrentEpisode(episode) else { return }
         transcriptText = LibraryStore.cachedTranscriptText(for: episode, in: modelContext)
         transcriptSegments = LibraryStore.cachedTranscriptSegments(for: episode, in: modelContext)
+        updateAlignmentDot(for: episode)
         Task { @MainActor [weak self, episode] in
             guard let self else { return }
             let loadedChapters = await preferredChapters(for: episode)
@@ -950,6 +1049,20 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
             self.player.updateAutoSkipChapters(loadedChapters)
             self.player.updateNowPlayingArtwork(url: self.currentArtworkURL(for: episode))
             self.update()
+        }
+    }
+
+    private func updateAlignmentDot(for episode: EpisodeDTO) {
+        guard isCurrentEpisode(episode) else { return }
+        switch LibraryStore.transcriptAlignmentStatus(for: episode, in: modelContext) {
+        case .none:
+            alignmentDotView.isHidden = true
+        case .exactFile:
+            alignmentDotView.backgroundColor = .systemGreen
+            alignmentDotView.isHidden = false
+        case .extrapolated:
+            alignmentDotView.backgroundColor = .systemYellow
+            alignmentDotView.isHidden = false
         }
     }
 
@@ -962,6 +1075,7 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
                 guard !Task.isCancelled, isCurrentEpisode(episode) else { return }
                 LibraryStore.cacheFingerprint(fingerprint, for: episode, in: modelContext)
                 await LibraryStore.alignTranscriptToDownloadedAudio(for: episode, in: modelContext)
+                updateAlignmentDot(for: episode)
             }
             guard !Task.isCancelled, isCurrentEpisode(episode) else { return }
             transcriptText = LibraryStore.cachedTranscriptText(for: episode, in: modelContext)
@@ -1067,7 +1181,19 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
     }
 
     @objc private func close() {
+        #if targetEnvironment(macCatalyst)
+        if let scene = view.window?.windowScene {
+            UIApplication.shared.requestSceneSessionDestruction(scene.session, options: nil, errorHandler: nil)
+        } else {
+            dismiss(animated: true)
+        }
+        #else
         dismiss(animated: true)
+        #endif
+    }
+
+    override var keyCommands: [UIKeyCommand]? {
+        [UIKeyCommand(input: UIKeyCommand.inputEscape, modifierFlags: [], action: #selector(close))]
     }
 
     @objc private func showCurrentEpisodeDetails() {
@@ -1104,6 +1230,15 @@ final class NowPlayingViewController: UIViewController, UIGestureRecognizerDeleg
             player.pauseForSleepTimer()
             SleepTimerState.shared.clear()
         }
+    }
+
+
+    private func formatAudioTime(_ t: Double) -> String {
+        let h = Int(t) / 3600
+        let m = (Int(t) % 3600) / 60
+        let s = Int(t) % 60
+        if h > 0 { return String(format: "%d:%02d:%02d", h, m, s) }
+        return String(format: "%d:%02d", m, s)
     }
 
     private func updateSleepTimerUI() {
@@ -1218,9 +1353,9 @@ private final class ChapterProgressRowView: UIButton {
         translatesAutoresizingMaskIntoConstraints = false
         layer.cornerRadius = 10
         clipsToBounds = true
-        backgroundColor = UIColor.white.withAlphaComponent(0.05)
+        backgroundColor = .secondarySystemFill
         layer.borderWidth = 1
-        layer.borderColor = UIColor.white.withAlphaComponent(0.1).cgColor
+        layer.borderColor = UIColor.separator.cgColor
         contentHorizontalAlignment = .leading
 
         fillView.translatesAutoresizingMaskIntoConstraints = false
@@ -1229,13 +1364,13 @@ private final class ChapterProgressRowView: UIButton {
 
         timeLabel.translatesAutoresizingMaskIntoConstraints = false
         timeLabel.font = .monospacedDigitSystemFont(ofSize: 12, weight: .semibold)
-        timeLabel.textColor = UIColor.white.withAlphaComponent(0.76)
+        timeLabel.textColor = .secondaryLabel
         timeLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
 
         titleLabelView.translatesAutoresizingMaskIntoConstraints = false
         titleLabelView.font = .preferredFont(forTextStyle: .subheadline)
         titleLabelView.adjustsFontForContentSizeCategory = true
-        titleLabelView.textColor = UIColor.white.withAlphaComponent(0.95)
+        titleLabelView.textColor = .label
         titleLabelView.numberOfLines = 2
 
         let stack = UIStackView(arrangedSubviews: [timeLabel, titleLabelView])
@@ -1279,7 +1414,7 @@ private final class ChapterProgressRowView: UIButton {
     func updateProgress(_ progress: Double, isCurrent: Bool) {
         let clamped = max(0, min(1, progress))
         fillWidthConstraint.constant = bounds.width * clamped
-        layer.borderColor = (isCurrent ? UIColor.systemOrange.withAlphaComponent(0.65) : UIColor.white.withAlphaComponent(0.1)).cgColor
+        layer.borderColor = (isCurrent ? UIColor.systemOrange : UIColor.separator).cgColor
         UIView.animate(withDuration: 0.2) {
             self.layoutIfNeeded()
         }
@@ -1308,10 +1443,20 @@ private final class AudioSettingsViewController: UIViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        view.backgroundColor = UIColor(white: 0.2, alpha: 1)
-        overrideUserInterfaceStyle = .dark
+        view.backgroundColor = .secondarySystemBackground
         configureLayout()
         updateSpeed()
+        let closeBtn = UIButton(type: .system)
+        closeBtn.setImage(UIImage(systemName: "xmark.circle.fill"), for: .normal)
+        closeBtn.tintColor = .secondaryLabel
+        closeBtn.translatesAutoresizingMaskIntoConstraints = false
+        closeBtn.addAction(UIAction { [weak self] _ in self?.dismiss(animated: true) }, for: .touchUpInside)
+        closeBtn.setPreferredSymbolConfiguration(UIImage.SymbolConfiguration(pointSize: 24), forImageIn: .normal)
+        view.addSubview(closeBtn)
+        NSLayoutConstraint.activate([
+            closeBtn.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
+            closeBtn.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 12)
+        ])
     }
 
     private func configureLayout() {
@@ -1411,7 +1556,7 @@ private final class AudioSettingsViewController: UIViewController {
     private func paddedContainer(_ content: UIView) -> UIView {
         let container = UIView()
         container.translatesAutoresizingMaskIntoConstraints = false
-        container.backgroundColor = UIColor.white.withAlphaComponent(0.08)
+        container.backgroundColor = .secondarySystemFill
         container.layer.cornerRadius = 22
         container.clipsToBounds = true
         content.translatesAutoresizingMaskIntoConstraints = false
@@ -1451,98 +1596,162 @@ private final class AudioSettingsViewController: UIViewController {
     }
 }
 
-private final class SleepTimerViewController: UIViewController {
-    private let player: PlayerController
-    private let statusLabel = UILabel()
-    private let progressView = UIProgressView(progressViewStyle: .default)
-    private var ticker: Timer?
-
+private final class SleepTimerViewController: UIHostingController<SleepTimerSheet> {
     init(player: PlayerController) {
-        self.player = player
-        super.init(nibName: nil, bundle: nil)
-        title = "Sleep Timer"
+        super.init(rootView: SleepTimerSheet(player: player))
     }
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
     }
+}
 
-    override func viewDidLoad() {
-        super.viewDidLoad()
-        view.backgroundColor = .secondarySystemBackground
-        configureUI()
-        refreshStatus()
-        ticker = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-            self?.refreshStatus()
+private struct SleepTimerSheet: View {
+    let player: PlayerController
+    @ObservedObject private var timerState = SleepTimerState.shared
+    @State private var now = Date()
+    @Environment(\.dismiss) private var dismiss
+
+    private let ticker = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
+
+    var body: some View {
+        VStack(alignment: .leading) {
+            HStack {
+                Text("Sleep Timer")
+                    .font(.title2.bold())
+                Spacer()
+                Button { dismiss() } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.title2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.horizontal)
+            .padding(.top)
+
+            statusSection
+                .padding(.horizontal)
+
+            Divider()
+                .padding(.vertical, 4)
+
+            optionsSection
+                .padding(.horizontal)
+
+            Spacer()
+        }
+        .onReceive(ticker) { date in
+            now = date
+            checkExpiry()
         }
     }
 
-    override func viewDidDisappear(_ animated: Bool) {
-        super.viewDidDisappear(animated)
-        ticker?.invalidate()
-        ticker = nil
-    }
+    @ViewBuilder
+    private var statusSection: some View {
+        if let state = timerState.state {
+            HStack {
+                ZStack {
+                    Circle()
+                        .stroke(Color.orange.opacity(0.2), lineWidth: 5)
+                    Circle()
+                        .trim(from: 0, to: progress(for: state))
+                        .stroke(Color.orange, style: StrokeStyle(lineWidth: 5, lineCap: .round))
+                        .rotationEffect(.degrees(-90))
+                        .animation(.linear(duration: 1), value: progress(for: state))
+                }
+                .frame(width: 56, height: 56)
 
-    private func configureUI() {
-        let fifteen = timerButton("15 Minutes") { SleepTimerState.shared.start(minutes: 15) }
-        let thirty = timerButton("30 Minutes") { SleepTimerState.shared.start(minutes: 30) }
-        let fortyFive = timerButton("45 Minutes") { SleepTimerState.shared.start(minutes: 45) }
-        let endOfEpisode = timerButton("End of Episode") { SleepTimerState.shared.startEndOfEpisode() }
-        let clear = timerButton("Turn Off") { SleepTimerState.shared.clear() }
-        clear.configuration?.baseBackgroundColor = .systemRed.withAlphaComponent(0.2)
-        clear.configuration?.baseForegroundColor = .systemRed
+                VStack(alignment: .leading) {
+                    Text(statusTitle(for: state))
+                        .font(.subheadline.bold())
+                    Text(statusSubtitle(for: state))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
 
-        statusLabel.font = .preferredFont(forTextStyle: .subheadline)
-        statusLabel.textColor = .secondaryLabel
-        statusLabel.numberOfLines = 0
-        progressView.progressTintColor = .systemOrange
+                Spacer()
 
-        let stack = UIStackView(arrangedSubviews: [statusLabel, progressView, fifteen, thirty, fortyFive, endOfEpisode, clear])
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        stack.axis = .vertical
-        stack.spacing = 12
-        view.addSubview(stack)
-        NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
-            stack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
-            stack.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 20)
-        ])
-    }
-
-    private func timerButton(_ title: String, action: @escaping () -> Void) -> UIButton {
-        var config = UIButton.Configuration.filled()
-        config.title = title
-        config.cornerStyle = .large
-        config.baseBackgroundColor = .systemOrange.withAlphaComponent(0.2)
-        config.baseForegroundColor = .systemOrange
-        let button = UIButton(type: .system)
-        button.configuration = config
-        button.addAction(UIAction { _ in action() }, for: .touchUpInside)
-        return button
-    }
-
-    private func refreshStatus() {
-        guard let state = SleepTimerState.shared.state else {
-            statusLabel.text = "No active sleep timer"
-            progressView.progress = 0
-            return
+                Button(role: .destructive) {
+                    SleepTimerState.shared.clear()
+                } label: {
+                    Label("Cancel", systemImage: "xmark.circle.fill")
+                        .labelStyle(.iconOnly)
+                        .font(.title2)
+                        .foregroundStyle(.secondary)
+                }
+                .accessibilityLabel("Cancel sleep timer")
+            }
+            .padding()
+            .background(.quaternary, in: RoundedRectangle(cornerRadius: 16))
+        } else {
+            HStack {
+                Image(systemName: "moon.zzz")
+                    .font(.title2)
+                    .foregroundStyle(.orange)
+                Text("No active timer")
+                    .foregroundStyle(.secondary)
+            }
+            .padding()
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.quaternary, in: RoundedRectangle(cornerRadius: 16))
         }
+    }
 
+    private var optionsSection: some View {
+        VStack {
+            timerRow(label: "15 minutes", icon: "moon") { SleepTimerState.shared.start(minutes: 15) }
+            timerRow(label: "30 minutes", icon: "moon.fill") { SleepTimerState.shared.start(minutes: 30) }
+            timerRow(label: "45 minutes", icon: "moon.stars") { SleepTimerState.shared.start(minutes: 45) }
+            timerRow(label: "End of episode", icon: "flag") { SleepTimerState.shared.startEndOfEpisode() }
+        }
+    }
+
+    private func timerRow(label: String, icon: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Label(label, systemImage: icon)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding()
+                .background(.quaternary, in: RoundedRectangle(cornerRadius: 14))
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.primary)
+    }
+
+    private func progress(for state: SleepTimerState.State) -> CGFloat {
         switch state.mode {
         case .fixedDuration:
-            let remaining = max(0, state.endDate.timeIntervalSinceNow)
-            let progress = max(0, min(1, 1 - (remaining / state.duration)))
-            statusLabel.text = "Running: \(Int(remaining / 60))m \(Int(remaining) % 60)s remaining"
-            progressView.progress = Float(progress)
-            if remaining <= 0.5 {
-                player.pauseForSleepTimer()
-                SleepTimerState.shared.clear()
-            }
+            let remaining = max(0, state.endDate.timeIntervalSince(now))
+            return CGFloat(max(0, min(1, 1 - (remaining / state.duration))))
         case .endOfEpisode:
-            statusLabel.text = "Running: ends when this episode finishes"
             let duration = max(player.duration ?? 0, 0)
-            let progress = duration > 0 ? min(1, max(0, player.elapsed / duration)) : 0
-            progressView.progress = Float(progress)
+            return duration > 0 ? CGFloat(min(1, max(0, player.elapsed / duration))) : 0
+        }
+    }
+
+    private func statusTitle(for state: SleepTimerState.State) -> String {
+        switch state.mode {
+        case .fixedDuration:
+            let remaining = max(0, state.endDate.timeIntervalSince(now))
+            let m = Int(remaining / 60)
+            let s = Int(remaining) % 60
+            return "\(m)m \(s)s remaining"
+        case .endOfEpisode:
+            return "Until episode ends"
+        }
+    }
+
+    private func statusSubtitle(for state: SleepTimerState.State) -> String {
+        switch state.mode {
+        case .fixedDuration: return "Fixed duration"
+        case .endOfEpisode: return "Tracking episode progress"
+        }
+    }
+
+    private func checkExpiry() {
+        guard let state = timerState.state, state.mode == .fixedDuration else { return }
+        if state.endDate.timeIntervalSince(now) <= 0.5 {
+            player.pauseForSleepTimer()
+            SleepTimerState.shared.clear()
         }
     }
 }

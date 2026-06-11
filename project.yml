@@ -5,6 +5,21 @@ options:
     iOS: "26.1"
     macOS: "15.0"
   createIntermediateGroups: true
+schemes:
+  Podcasts:
+    build:
+      targets:
+        Podcasts: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+    profile:
+      config: Release
+    analyze:
+      config: Debug
+    archive:
+      config: Release
 settings:
   base:
     SWIFT_VERSION: "6.0"
@@ -13,6 +28,52 @@ settings:
     DEVELOPMENT_TEAM: X5933694SW
 packages: {}
 targets:
+  PodcatcherWidgets:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "26.1"
+    sources:
+      - path: ios/PodcatcherWidgets
+    info:
+      path: ios/PodcatcherWidgets/Info.plist
+      properties:
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.nagel.podcasts.widgets
+        PRODUCT_NAME: PodcatcherWidgets
+        INFOPLIST_KEY_CFBundleDisplayName: The Podcatcher
+        SKIP_INSTALL: YES
+        SUPPORTS_MACCATALYST: YES
+        MACOSX_DEPLOYMENT_TARGET: "15.0"
+        DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER: NO
+        CURRENT_PROJECT_VERSION: 88
+    entitlements:
+      path: ios/PodcatcherWidgets/PodcatcherWidgets.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.com.nagel.podcasts
+    dependencies:
+      - target: PodcatcherKit
+      - sdk: WidgetKit.framework
+      - sdk: SwiftUI.framework
+
+  PodcatcherKit:
+    type: framework
+    platform: iOS
+    deploymentTarget: "26.1"
+    sources:
+      - path: ios/PodcatcherKit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.nagel.podcasts.podcatcherkit
+        GENERATE_INFOPLIST_FILE: YES
+        DEFINES_MODULE: YES
+    dependencies:
+      - sdk: AppIntents.framework
+        weak: true
   WorkerMonitor:
     type: application
     platform: macOS
@@ -41,30 +102,55 @@ targets:
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
         INFOPLIST_KEY_BackendBaseURL: https://podcasts.hannesnagel.com
-        CURRENT_PROJECT_VERSION: 68
+        CURRENT_PROJECT_VERSION: 88
         ENABLE_USER_SCRIPT_SANDBOXING: YES
         ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS: YES
+        SUPPORTS_MACCATALYST: YES
+        MACOSX_DEPLOYMENT_TARGET: "15.0"
+        DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER: NO
+    dependencies:
+      - sdk: HealthKit.framework
+        weak: true
+      - target: PodcatcherKit
+        embed: true
+      - target: PodcatcherWidgets
+        embed: true
+        codeSign: true
+        platformFilter: ios
+    entitlements:
+      path: ios/PodcastsApp/Podcasts.entitlements
+      properties:
+        com.apple.developer.healthkit: true
+        com.apple.security.application-groups:
+          - group.com.nagel.podcasts
+        com.apple.developer.icloud-services:
+          - CloudKit
+        com.apple.developer.icloud-container-identifiers:
+          - iCloud.com.nagel.podcasts
     info:
       path: ios/PodcastsApp/Info.plist
       properties:
         CFBundleDisplayName: The Podcatcher
         CFBundleShortVersionString: "1.0"
-        CFBundleVersion: "68"
+        CFBundleVersion: "88"
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
         BackendBaseURL: https://podcasts.hannesnagel.com
         UILaunchScreen: {}
         UIApplicationSceneManifest:
-          UIApplicationSupportsMultipleScenes: false
+          UIApplicationSupportsMultipleScenes: true
         UIBackgroundModes:
           - audio
           - fetch
+          - remote-notification
         BGTaskSchedulerPermittedIdentifiers:
           - com.nagel.podcasts.refresh
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
-          - UIInterfaceOrientationLandscapeLeft
-          - UIInterfaceOrientationLandscapeRight
+        NSHealthShareUsageDescription: "Used to detect when you fell asleep so playback can be restored to that point."
+        NSHealthUpdateUsageDescription: "The Podcatcher does not write health data."
+        NSSupportsLiveActivities: true
+        NSSupportsLiveActivitiesFullScreen: true
         UISupportedInterfaceOrientations~ipad:
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationPortraitUpsideDown

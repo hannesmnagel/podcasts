@@ -202,7 +202,7 @@ final class EpisodeDetailViewController: UIViewController {
 
     private func makeNotesSection() -> UIView {
         let notesView = episode.summary.map {
-            ShowNotesText.collapsibleView(raw: $0)
+            ShowNotesText.view(raw: $0)
         } ?? bodyLabel("No Episode Notes")
         return section(title: "Episode Notes", arrangedSubviews: [notesView])
     }

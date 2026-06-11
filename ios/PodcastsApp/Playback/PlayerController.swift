@@ -17,7 +17,8 @@ final class PlayerController: ObservableObject {
     @Published private(set) var isPlaying = false
     @Published private(set) var elapsed: TimeInterval = 0
     @Published private(set) var duration: TimeInterval?
-    @Published private(set) var undoSeekAction: SeekUndoAction?
+    @Published private(set) var seekAction: SeekUndoAction?
+    @Published private(set) var didSeek: TimeInterval = 0  // fires with the destination position on every user-initiated seek
     @Published var speed: Float = Float(PlaybackSettings.globalSpeed) {
         didSet {
             let clamped = Float(PlaybackSettings.clampedSpeed(Double(speed)))
@@ -41,7 +42,6 @@ final class PlayerController: ObservableObject {
     private var isAutoSkipping = false
     private var didInstallRemoteCommandHandlers = false
     private var shouldResumeAfterAudioInterruption = false
-    private var pendingUndoSeekActions: [SeekUndoAction.ID: SeekUndoAction] = [:]
 
     var playbackDidFinish: ((EpisodeDTO) -> Void)?
 
@@ -120,23 +120,13 @@ final class PlayerController: ObservableObject {
         seek(to: fraction, from: nil)
     }
 
-    func seek(to fraction: Double, from sourceSeconds: TimeInterval?) {
+    func seek(to fraction: Double, from sourceSeconds: TimeInterval?, finalizing: Bool = true) {
         guard let duration, duration.isFinite, duration > 0 else { return }
-        performSeek(to: duration * fraction, from: sourceSeconds, resetAutoSkip: true, recordsUndo: true)
+        performSeek(to: duration * fraction, from: sourceSeconds, resetAutoSkip: finalizing, recordsUndo: finalizing)
     }
 
     func seek(toTime seconds: TimeInterval) {
         seek(toTime: seconds, resetAutoSkip: true)
-    }
-
-    func undoSeek(_ action: SeekUndoAction) {
-        guard pendingUndoSeekActions[action.id] != nil else { return }
-        pendingUndoSeekActions[action.id] = nil
-        performSeek(to: action.from, resetAutoSkip: true, recordsUndo: false)
-    }
-
-    func dismissUndoSeek(_ action: SeekUndoAction) {
-        pendingUndoSeekActions[action.id] = nil
     }
 
     func updateAutoSkipChapters(_ chapters: [EpisodeChapterDTO]) {
@@ -177,11 +167,12 @@ final class PlayerController: ObservableObject {
             lastAutoSkippedChapterID = nil
         }
         if recordsUndo, currentEpisode != nil, abs(targetSeconds - source) >= 0.5 {
-            let action = SeekUndoAction(from: source, to: targetSeconds)
-            pendingUndoSeekActions[action.id] = action
-            undoSeekAction = action
+            seekAction = SeekUndoAction(from: source, to: targetSeconds)
         }
         elapsed = targetSeconds
+        if recordsUndo {
+            didSeek = targetSeconds
+        }
         updateCurrentArtworkForPlaybackPosition()
         player.seek(to: CMTime(seconds: targetSeconds, preferredTimescale: 600)) { [weak self] _ in
             Task { @MainActor in
